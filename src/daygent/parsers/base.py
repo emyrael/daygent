@@ -51,7 +51,11 @@ class BaseParser(ABC):
 
 
 class ParserRegistry:
-    """Ordered registry of parsers. First supporting parser wins per file."""
+    """Ordered registry of parsers. Every matching parser runs on a file.
+
+    Registration order is the dispatch order so Python + FastAPI + LangGraph
+    detectors can all claim the same `.py` file deterministically.
+    """
 
     def __init__(self, parsers: list[BaseParser] | None = None) -> None:
         self._parsers: list[BaseParser] = list(parsers or [])
@@ -61,21 +65,14 @@ class ParserRegistry:
         self._parsers.append(parser)
 
     def parsers(self) -> list[BaseParser]:
-        """Return registered parsers in order."""
+        """Return registered parsers in registration order."""
         return list(self._parsers)
 
+    def matching(self, path: Path, context: ParseContext) -> list[BaseParser]:
+        """Return every parser that supports this path, in registration order."""
+        return [parser for parser in self._parsers if parser.supports(path, context)]
+
     def choose(self, path: Path, context: ParseContext) -> BaseParser | None:
-        """Return the first parser that supports this path."""
-        for parser in self._parsers:
-            if parser.supports(path, context):
-                return parser
-        return None
-
-
-def default_registry() -> ParserRegistry:
-    """Built-in parser registry.
-
-    Technology parsers (Python, SQL, dbt, FastAPI, LangGraph, …) register here
-    in later issues. v0.1 scanner still walks and dispatches with an empty set.
-    """
-    return ParserRegistry()
+        """Return the first matching parser, or None. Prefer `matching()`."""
+        matched = self.matching(path, context)
+        return matched[0] if matched else None

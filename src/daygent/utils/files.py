@@ -17,8 +17,18 @@ IGNORE_DIR_NAMES = frozenset(
         "__pycache__",
         ".pytest_cache",
         ".mypy_cache",
+        ".ruff_cache",
         ".next",
         ".daygent",
+        ".cursor",
+        ".eggs",
+        ".idea",
+        ".vscode",
+        ".tox",
+        ".nox",
+        "htmlcov",
+        "site-packages",
+        "graphify-out",
     }
 )
 
@@ -29,7 +39,19 @@ MAX_FILE_BYTES = 10 * 1024 * 1024
 
 def is_ignored_dir(name: str) -> bool:
     """Return True if a directory name is always skipped."""
-    return name in IGNORE_DIR_NAMES
+    return name in IGNORE_DIR_NAMES or name.endswith(".egg-info")
+
+
+def dir_is_excluded(relative_posix: str, exclude: list[str]) -> bool:
+    """Return True if a directory (and everything under it) matches exclude globs."""
+    if not exclude:
+        return False
+    rel = relative_posix.replace("\\", "/").strip("/")
+    if not rel:
+        return False
+    if matches_globs(rel, exclude):
+        return True
+    return matches_globs(f"{rel}/_", exclude)
 
 
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
@@ -134,7 +156,7 @@ def _walk(
 
     for entry in entries:
         if entry.is_dir() and not entry.is_symlink():
-            if is_ignored_dir(entry.name):
+            if _should_skip_dir(entry, root, exclude):
                 continue
             yield from _walk(root, entry, include, exclude, seen, warnings)
             continue
@@ -148,7 +170,7 @@ def _walk(
                     )
                 continue
             if target.is_dir():
-                if is_ignored_dir(entry.name):
+                if _should_skip_dir(entry, root, exclude):
                     continue
                 yield from _walk(root, entry, include, exclude, seen, warnings)
                 continue
@@ -167,3 +189,10 @@ def _walk(
         if include and not matches_globs(relative, include):
             continue
         yield entry
+
+
+def _should_skip_dir(entry: Path, root: Path, exclude: list[str]) -> bool:
+    """Skip built-in ignore names and directories covered by exclude globs."""
+    if is_ignored_dir(entry.name):
+        return True
+    return dir_is_excluded(_rel_or_name(entry, root), exclude)

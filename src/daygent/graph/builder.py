@@ -13,7 +13,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from daygent.models import Edge, Graph, Node, ProjectMetadata, ScanMetadata, utc_now_iso
+from daygent.models import Edge, Graph, Node, NodeType, ProjectMetadata, ScanMetadata, utc_now_iso
 from daygent.parsers.base import ParseResult
 
 # Drop edges whose source or target node was never emitted. Do not keep them.
@@ -55,9 +55,19 @@ def build_graph(
             existing_edge = edges.get(key)
             edges[key] = existing_edge.merge(edge) if existing_edge else edge
 
+    unresolved_imports = {
+        node_id
+        for node_id, node in nodes.items()
+        if _is_unresolved_import(node)
+    }
+    for node_id in unresolved_imports:
+        nodes.pop(node_id)
+
     kept_edges: list[Edge] = []
     for key in sorted(edges):
         edge = edges[key]
+        if edge.source in unresolved_imports or edge.target in unresolved_imports:
+            continue
         if edge.source not in nodes or edge.target not in nodes:
             warnings.append(
                 f"Dropped dangling edge {edge.source} -> {edge.target} ({edge.type})"
@@ -75,3 +85,12 @@ def build_graph(
             warnings=warnings,
         ),
     ).sorted()
+
+
+def _is_unresolved_import(node: Node) -> bool:
+    """True for placeholder import modules that were never seen as a source file."""
+    if node.type != NodeType.PYTHON_MODULE and node.type != "python_module":
+        return False
+    if node.file_path:
+        return False
+    return bool(node.metadata.get("imported"))

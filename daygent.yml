@@ -1,0 +1,5 @@
+include: []
+exclude:
+  - graphify-out/**
+  - .cursor/**
+output: .daygent/graph.json

@@ -119,7 +119,7 @@ class GraphStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             tmp_path.replace(self.path)
-        except Exception:
+        except BaseException:
             try:
                 tmp_path.unlink(missing_ok=True)
             except OSError:

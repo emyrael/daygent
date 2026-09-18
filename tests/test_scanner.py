@@ -14,6 +14,8 @@ from daygent.scanner import Scanner
 from daygent.utils.files import (
     IGNORE_DIR_NAMES,
     MAX_FILE_BYTES,
+    dir_is_excluded,
+    is_ignored_dir,
     matches_globs,
 )
 
@@ -85,7 +87,7 @@ class SqlOnlyParser(BaseParser):
 
 
 class FirstWinsParser(BaseParser):
-    """Always supports; used to prove registry order."""
+    """Claims every .py file. Used for multi-parser dispatch tests."""
 
     name = "first"
 
@@ -103,7 +105,7 @@ class FirstWinsParser(BaseParser):
 
 
 class SecondParser(BaseParser):
-    """Would also support .py if the first parser did not win."""
+    """Also claims .py files so both parsers should run."""
 
     name = "second"
 
@@ -118,6 +120,18 @@ class SecondParser(BaseParser):
         return ParseResult(
             nodes=[Node(id="python_module:second", name="second", type="python_module")]
         )
+
+
+class AlwaysBoomParser(BaseParser):
+    """Raises on every parse so sibling parsers can still run."""
+
+    name = "always-boom"
+
+    def supports(self, path: Path, context: ParseContext) -> bool:
+        return path.suffix == ".py"
+
+    def parse(self, path: Path, context: ParseContext) -> ParseResult:
+        raise RuntimeError("parser exploded")
 
 
 class BoomParser(BaseParser):
@@ -167,16 +181,22 @@ class ReadingParser(BaseParser):
 
 
 def test_ignore_builtin_dirs_and_large_files(tmp_path: Path) -> None:
+    created: set[str] = set()
     for name in sorted(IGNORE_DIR_NAMES):
         hidden = tmp_path / name / "lib"
-        hidden.mkdir(parents=True)
+        try:
+            hidden.mkdir(parents=True)
+        except PermissionError:
+            continue
         (hidden / "hidden.py").write_text("x = 1\n", encoding="utf-8")
+        created.add(name)
+    assert created, "expected at least one built-in ignore directory to be created"
     (tmp_path / "keep.py").write_text("x = 1\n", encoding="utf-8")
     huge = tmp_path / "huge.py"
     huge.write_bytes(b"x" * (MAX_FILE_BYTES + 1))
 
     parser = RecordingParser()
-    report = Scanner(ParserRegistry([parser])).scan(tmp_path)
+    report = Scanner(ParserRegistry([parser])).scan(tmp_path, scope=False)
     parsed_names = {path.name for path in parser.parsed}
     assert parsed_names == {"keep.py"}
     assert any("larger than 10 MiB" in warning for warning in report.graph.scan.warnings)
@@ -186,7 +206,7 @@ def test_ignore_builtin_dirs_and_large_files(tmp_path: Path) -> None:
 def test_parser_exception_does_not_abort_scan(tmp_path: Path) -> None:
     (tmp_path / "boom.py").write_text("broken", encoding="utf-8")
     (tmp_path / "ok.py").write_text("ok", encoding="utf-8")
-    report = Scanner(ParserRegistry([BoomParser()])).scan(tmp_path)
+    report = Scanner(ParserRegistry([BoomParser()])).scan(tmp_path, scope=False)
     assert any("unable to parse boom.py" in warning for warning in report.graph.scan.warnings)
     assert any(node.id == "python_module:ok.py" for node in report.graph.nodes)
 
@@ -265,21 +285,85 @@ def test_parser_dispatch_by_extension(tmp_path: Path) -> None:
     (tmp_path / "orders.sql").write_text("select 1", encoding="utf-8")
     py_parser = PyOnlyParser()
     sql_parser = SqlOnlyParser()
-    report = Scanner(ParserRegistry([py_parser, sql_parser])).scan(tmp_path)
+    report = Scanner(ParserRegistry([py_parser, sql_parser])).scan(tmp_path, scope=False)
     assert [path.name for path in py_parser.parsed] == ["app.py"]
     assert [path.name for path in sql_parser.parsed] == ["orders.sql"]
     ids = {node.id for node in report.graph.nodes}
     assert ids == {"python_module:app.py", "sql_table:orders"}
 
 
-def test_first_supporting_parser_wins(tmp_path: Path) -> None:
+def test_matching_parsers_all_run_in_registration_order(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text("x", encoding="utf-8")
     first = FirstWinsParser()
     second = SecondParser()
-    report = Scanner(ParserRegistry([first, second])).scan(tmp_path)
+    context = ParseContext(root=tmp_path, config=load_config(tmp_path)[0])
+    registry = ParserRegistry([first, second])
+    path = tmp_path / "app.py"
+    assert [parser.name for parser in registry.matching(path, context)] == ["first", "second"]
+    report = Scanner(registry).scan(tmp_path, scope=False)
     assert first.parsed
-    assert second.parsed == []
-    assert [node.id for node in report.graph.nodes] == ["python_module:first"]
+    assert second.parsed
+    assert {node.id for node in report.graph.nodes} == {
+        "python_module:first",
+        "python_module:second",
+    }
+
+
+def test_one_parser_failure_does_not_stop_other_parsers(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("x", encoding="utf-8")
+    second = SecondParser()
+    report = Scanner(ParserRegistry([AlwaysBoomParser(), second])).scan(
+        tmp_path, scope=False
+    )
+    assert second.parsed
+    assert any("unable to parse app.py" in warning for warning in report.graph.scan.warnings)
+    assert [node.id for node in report.graph.nodes] == ["python_module:second"]
+
+
+def test_overlapping_parser_nodes_are_merged_by_builder(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("x", encoding="utf-8")
+
+    class Left(BaseParser):
+        name = "left"
+
+        def supports(self, path: Path, context: ParseContext) -> bool:
+            return path.suffix == ".py"
+
+        def parse(self, path: Path, context: ParseContext) -> ParseResult:
+            return ParseResult(
+                nodes=[
+                    Node(
+                        id="python_module:app",
+                        name="app",
+                        type="python_module",
+                        metadata={"a": 1},
+                    )
+                ]
+            )
+
+    class Right(BaseParser):
+        name = "right"
+
+        def supports(self, path: Path, context: ParseContext) -> bool:
+            return path.suffix == ".py"
+
+        def parse(self, path: Path, context: ParseContext) -> ParseResult:
+            return ParseResult(
+                nodes=[
+                    Node(
+                        id="python_module:app",
+                        name="app",
+                        type="python_module",
+                        metadata={"b": 2},
+                    )
+                ]
+            )
+
+    report = Scanner(ParserRegistry([Left(), Right()])).scan(tmp_path, scope=False)
+    matches = [node for node in report.graph.nodes if node.id == "python_module:app"]
+    assert len(matches) == 1
+    assert matches[0].metadata.get("a") == 1
+    assert matches[0].metadata.get("b") == 2
 
 
 def test_unreadable_file_warns_and_continues(
@@ -298,7 +382,7 @@ def test_unreadable_file_warns_and_continues(
 
     monkeypatch.setattr(Path, "open", boom_open)
     parser = ReadingParser()
-    report = Scanner(ParserRegistry([parser])).scan(tmp_path)
+    report = Scanner(ParserRegistry([parser])).scan(tmp_path, scope=False)
     assert any("unable to read locked.py" in warning for warning in report.graph.scan.warnings)
     assert any(node.id == "python_module:ok.py" for node in report.graph.nodes)
 
@@ -327,7 +411,13 @@ def test_scanner_does_not_import_scanned_code(tmp_path: Path) -> None:
 
 def test_scanner_modules_have_no_language_parser_logic() -> None:
     forbidden = ("sqlglot", "ast.parse", "ast.dump", "exec(", "eval(")
-    for relative in ("scanner.py", "config.py", "utils/files.py", "parsers/base.py"):
+    for relative in (
+        "scanner.py",
+        "config.py",
+        "utils/files.py",
+        "parsers/base.py",
+        "graph/scope.py",
+    ):
         text = (SCANNER_SRC / relative).read_text(encoding="utf-8")
         for token in forbidden:
             assert token not in text, f"{relative} contains {token}"
@@ -339,3 +429,31 @@ def test_matches_globs_double_star() -> None:
     assert not matches_globs("root.py", ["src/**", "models/**"])
     assert matches_globs("migrations/001.sql", ["migrations/**"])
     assert matches_globs("nested/skip.py", ["skip.py"])
+    assert dir_is_excluded("graphify-out", ["graphify-out/**"])
+    assert dir_is_excluded("generated", ["generated/**"])
+    assert not dir_is_excluded("src", ["generated/**"])
+
+
+def test_ignore_graphify_cursor_and_egg_info(tmp_path: Path) -> None:
+    assert is_ignored_dir("graphify-out")
+    assert is_ignored_dir(".cursor")
+    assert is_ignored_dir("daygent.egg-info")
+    (tmp_path / "graphify-out" / "wiki").mkdir(parents=True)
+    (tmp_path / "graphify-out" / "wiki" / "extracted.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "daygent.egg-info").mkdir()
+    (tmp_path / "daygent.egg-info" / "pkg.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "keep.py").write_text("x = 1\n", encoding="utf-8")
+    parser = RecordingParser()
+    Scanner(ParserRegistry([parser])).scan(tmp_path)
+    assert {path.name for path in parser.parsed} == {"keep.py"}
+
+
+def test_exclude_skips_matching_directories(tmp_path: Path) -> None:
+    (tmp_path / "generated" / "nested").mkdir(parents=True)
+    (tmp_path / "generated" / "nested" / "gen.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "daygent.yml").write_text("exclude:\n  - generated/**\n", encoding="utf-8")
+    parser = RecordingParser()
+    Scanner(ParserRegistry([parser])).scan(tmp_path)
+    assert {path.name for path in parser.parsed} == {"app.py"}

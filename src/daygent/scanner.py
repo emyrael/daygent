@@ -7,6 +7,7 @@ from pathlib import Path
 from daygent.config import DaygentConfig, load_config
 from daygent.exceptions import DaygentConfigError
 from daygent.graph.builder import ScanStats, build_graph
+from daygent.graph.scope import project_lineage_graph
 from daygent.models import Graph, ProjectMetadata
 from daygent.parsers import ParseContext, ParserRegistry, ParseResult, default_registry
 from daygent.utils.files import MAX_FILE_BYTES, iter_source_files
@@ -48,8 +49,13 @@ class Scanner:
         config: DaygentConfig | None = None,
         config_path: Path | None = None,
         verbose: bool = False,
+        scope: bool = True,
     ) -> ScanReport:
-        """Scan `root` and return a graph plus output path (not yet written)."""
+        """Scan `root` and return a graph plus output path (not yet written).
+
+        Parsers emit a candidate graph; `scope=True` (the default) projects it
+        onto data/AI lineage before the report is returned.
+        """
         root = root.resolve()
         if not root.is_dir():
             raise DaygentConfigError(f"Scan path is not a directory: {root}")
@@ -97,20 +103,21 @@ class Scanner:
                 verbose_lines.append(warning)
                 continue
 
-            parser = self.registry.choose(path, context)
-            if parser is None:
+            parsers = self.registry.matching(path, context)
+            if not parsers:
                 verbose_lines.append(f"No parser for {rel}")
                 continue
-            verbose_lines.append(f"Parsing {rel} with {parser.name}")
-            try:
-                result = parser.parse(path, context)
-            except Exception as exc:  # noqa: BLE001 — isolate per-file parser failures
-                warning = f"Warning: unable to parse {rel}"
-                extra_warnings.append(warning)
-                verbose_lines.append(f"{warning}: {exc}")
-                logger.debug("Parser %s failed on %s", parser.name, rel, exc_info=True)
-                continue
-            results.append(result)
+            for parser in parsers:
+                verbose_lines.append(f"Parsing {rel} with {parser.name}")
+                try:
+                    result = parser.parse(path, context)
+                except Exception as exc:  # noqa: BLE001 — isolate per-parser failures
+                    warning = f"Warning: unable to parse {rel}"
+                    extra_warnings.append(warning)
+                    verbose_lines.append(f"{warning} ({parser.name}): {exc}")
+                    logger.debug("Parser %s failed on %s", parser.name, rel, exc_info=True)
+                    continue
+                results.append(result)
 
         graph = build_graph(
             results,
@@ -120,6 +127,14 @@ class Scanner:
                 project=ProjectMetadata(name=root.name, path=str(root)),
             ),
         )
+        if scope:
+            before_nodes = len(graph.nodes)
+            before_edges = len(graph.edges)
+            graph = project_lineage_graph(graph)
+            verbose_lines.append(
+                f"Scoped lineage graph from {before_nodes} nodes / {before_edges} edges "
+                f"to {len(graph.nodes)} nodes / {len(graph.edges)} edges"
+            )
         return ScanReport(
             graph,
             files_considered=files_considered,

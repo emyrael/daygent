@@ -200,3 +200,67 @@ def test_edge_direction_is_not_reversed() -> None:
     ) in pairs
     assert not any(edge.source == route.id for edge in graph.edges)
     assert not any(edge.target == raw.id for edge in graph.edges)
+
+
+def test_unresolved_imported_modules_are_dropped() -> None:
+    graph = build_graph(
+        [
+            ParseResult(
+                nodes=[
+                    Node(
+                        id="python_module:app",
+                        name="app",
+                        type="python_module",
+                        file_path="app.py",
+                    ),
+                    Node(
+                        id="python_module:ast",
+                        name="ast",
+                        type="python_module",
+                        metadata={"imported": True},
+                    ),
+                ],
+                edges=[
+                    Edge(
+                        source="python_module:ast",
+                        target="python_module:app",
+                        type="imported_by",
+                        confidence=Confidence.HIGH,
+                    )
+                ],
+            )
+        ]
+    )
+    assert [node.id for node in graph.nodes] == ["python_module:app"]
+    assert graph.edges == []
+    assert graph.scan.warnings == []
+
+
+def test_imported_module_kept_when_source_file_exists() -> None:
+    graph = build_graph(
+        [
+            ParseResult(
+                nodes=[
+                    Node(
+                        id="python_module:lib",
+                        name="lib",
+                        type="python_module",
+                        metadata={"imported": True},
+                    )
+                ]
+            ),
+            ParseResult(
+                nodes=[
+                    Node(
+                        id="python_module:lib",
+                        name="lib",
+                        type="python_module",
+                        file_path="lib.py",
+                    )
+                ]
+            ),
+        ]
+    )
+    matches = [node for node in graph.nodes if node.id == "python_module:lib"]
+    assert len(matches) == 1
+    assert matches[0].file_path == "lib.py"
