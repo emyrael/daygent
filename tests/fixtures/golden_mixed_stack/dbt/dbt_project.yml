@@ -1,0 +1,4 @@
+name: golden_mixed_stack
+version: "1.0"
+profile: default
+model-paths: ["models"]
