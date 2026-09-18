@@ -165,10 +165,14 @@ Built-in skips include `.venv`, `node_modules`, `graphify-out`, `.cursor`, and `
 
 `daygent graph --html --open` writes a self-contained `.daygent/graph.html`:
 
-- pan, zoom, search, type filters
-- click a node for details, connections, evidence, metadata
-- click an edge for relationship evidence
-- drag nodes; blast-radius / upstream / downstream remain
+- opens on **asset lineage**: tables, dbt models, pipeline datasets, routes, and vector stores, with Python functions and temp views contracted into single edges
+- **Show implementation details** reveals the full detailed graph; nothing is ever deleted from it
+- connected pipelines are laid out left to right and packed into rows, so unrelated flows sit side by side instead of stacking into one tall column
+- filtering by type keeps the matching nodes **plus their lineage neighbours** (switch to `Show matches only` for the strict view)
+- **Focus lineage** reduces the canvas to the selected node's connected flow
+- search centers the first match and keeps its context; Enter cycles matches
+- clicking a contracted edge lists the hops it hides, e.g. `via load_orders() → tmp_orders → clean_orders()`
+- `bronze.*` / `silver.*` / `gold.*` appear as grouping labels only where the name actually contains them; they never create edges
 - no CDN, no `fetch`, no telemetry
 
 ## Local-first guarantees
@@ -182,16 +186,18 @@ Built-in skips include `.venv`, `node_modules`, `graphify-out`, `.cursor`, and `
 
 ## Known limitations (v0.2)
 
-- Cross-file Python call resolution is incomplete. Same-file calls are detected; calls across modules are not fully linked.
+- Spark temp views resolve within the declaring module only. A view created in one file and consumed in another is not linked.
 - Dynamic table names, f-string SQL, and runtime-constructed queries are generally omitted.
+- Loop unrolling covers literal `dict`/`list`/`tuple` constants with `.items()`, `.keys()`, `.values()`, or direct iteration, up to 64 entries. Anything computed at runtime is skipped.
+- DataFrame dataflow is same-function and assignment-level: `df = spark.read.table(...)`, `df = df.transform(...)`, `df.write...`, `df.createOrReplaceTempView(...)`. There is no symbolic execution.
+- Cross-file Python calls resolve only through static imports. Dynamic dispatch, class instantiation, and attribute chains deeper than one level are not resolved.
+- If a name is both a logical `@dlt.view` and a genuinely physical table elsewhere, the logical declaration wins and the two collapse into one node.
 - No Spark plan analysis, Databricks workspace inspection, Django setup/import, or SQLAlchemy metadata reflection.
-- Complex DataFrame variable propagation is not modeled; the containing function is the transform boundary.
-- Cross-function/cross-file dynamic dataflow may still be incomplete.
 - Isolated Python helpers and unrelated health routes are omitted by design (scoping).
 - dbt compile and warehouse introspection are out of scope.
 - Default HTML does not ship source code.
 
-The golden fixtures at `tests/fixtures/golden_mixed_stack/` and `tests/fixtures/python_data_stack/` lock this behavior.
+The golden fixtures at `tests/fixtures/golden_mixed_stack/`, `tests/fixtures/python_data_stack/`, and `tests/fixtures/dlt_sensor_pipeline/` lock this behavior.
 
 ## Roadmap
 

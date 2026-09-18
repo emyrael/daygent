@@ -32,13 +32,16 @@ ANCHOR_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# API/service nodes stay when they sit on a relevant lineage flow.
+# API/service nodes and pipeline aliases stay when they sit on a relevant
+# lineage flow. A Spark temp view is an alias, so it is only meaningful when it
+# actually connects two kept nodes.
 BRIDGE_TYPES: frozenset[str] = frozenset(
     {
         NodeType.API_ROUTE,
         NodeType.API_CLIENT,
         NodeType.SERVICE,
         NodeType.AGENT,
+        NodeType.TEMP_VIEW,
     }
 )
 

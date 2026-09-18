@@ -7,6 +7,7 @@ from pathlib import Path
 from daygent.config import DaygentConfig, load_config
 from daygent.exceptions import DaygentConfigError
 from daygent.graph.builder import ScanStats, build_graph
+from daygent.graph.identity import resolve_dataset_identity
 from daygent.graph.scope import project_lineage_graph
 from daygent.models import Graph, ProjectMetadata
 from daygent.parsers import ParseContext, ParserRegistry, ParseResult, default_registry
@@ -127,6 +128,13 @@ class Scanner:
                 project=ProjectMetadata(name=root.name, path=str(root)),
             ),
         )
+        before_identity = len(graph.nodes)
+        graph = resolve_dataset_identity(graph)
+        if len(graph.nodes) != before_identity:
+            verbose_lines.append(
+                f"Resolved {before_identity - len(graph.nodes)} relation references "
+                "onto declared pipeline datasets"
+            )
         if scope:
             before_nodes = len(graph.nodes)
             before_edges = len(graph.edges)

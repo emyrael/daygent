@@ -113,10 +113,20 @@ def clean_customers():
 """,
     )
     pairs = _pairs(result)
-    assert ("pipeline_dataset:bronze_customers", "python_function:job.customers") in pairs
-    assert ("python_function:job.customers", "pipeline_dataset:silver_customers") in pairs
-    assert ("pipeline_dataset:bronze_events", "python_function:job.clean_customers") in pairs
+    # @dlt.table is a persisted output, so it takes physical identity and can
+    # unify with spark.read.table("silver_customers") elsewhere. An undeclared
+    # dlt.read target falls back to a physical table too.
+    assert ("sql_table:bronze_customers", "python_function:job.customers") in pairs
+    assert ("python_function:job.customers", "sql_table:silver_customers") in pairs
+    assert ("sql_table:bronze_events", "python_function:job.clean_customers") in pairs
+    # @dlt.view stays logical.
     assert ("python_function:job.clean_customers", "pipeline_dataset:clean_customers") in pairs
+    table = next(item for item in result.nodes if item.id == "sql_table:silver_customers")
+    assert table.metadata["pipeline_dataset"] is True
+    assert table.metadata["dataset_kind"] == "table"
+    assert table.metadata["defining_function"] == "customers"
+    view = next(item for item in result.nodes if item.id == "pipeline_dataset:clean_customers")
+    assert view.metadata["dataset_declaration"] is True
 
 
 def test_lakeflow_materialized_view(tmp_path: Path) -> None:
@@ -133,11 +143,12 @@ def customer_metrics():
     assert ("sql_table:silver.customers", "python_function:job.customer_metrics") in pairs
     assert (
         "python_function:job.customer_metrics",
-        "pipeline_dataset:gold_customer_metrics",
+        "sql_table:gold_customer_metrics",
     ) in pairs
-    node = next(item for item in result.nodes if item.id == "pipeline_dataset:gold_customer_metrics")
+    node = next(item for item in result.nodes if item.id == "sql_table:gold_customer_metrics")
     assert node.metadata["framework"] == "lakeflow"
     assert node.metadata["dataset_kind"] == "materialized_view"
+    assert node.metadata["pipeline_dataset"] is True
 
 
 def test_dlt_dynamic_name_omitted(tmp_path: Path) -> None:

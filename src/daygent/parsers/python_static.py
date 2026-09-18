@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,12 +12,20 @@ from daygent.models.ids import (
     make_python_function_id,
     make_python_module_id,
     make_sql_table_id,
+    make_temp_view_id,
+    normalize_sql_table_name,
     posix_relpath,
 )
 from daygent.parsers.ast_literals import call_function_name, named_or_positional
 from daygent.parsers.evidence import evidence_metadata
 from daygent.parsers.python_parser import module_name_from_path
-from daygent.parsers.sql_parser import extract_sql_lineage, looks_like_sql
+from daygent.parsers.sql_parser import SqlLineageFact, extract_sql_lineage, looks_like_sql
+
+# A statically known literal: a string, a sequence of strings, or a str→str map.
+LiteralValue = str | tuple[str, ...] | dict[str, str]
+
+# Resolve a relation name appearing in code or SQL to a graph node id.
+RelationResolver = Callable[[str, int | None], str]
 
 
 def method_name(call: ast.Call) -> str | None:
@@ -139,6 +148,79 @@ def static_string(node: ast.AST | None, constants: dict[str, str]) -> str | None
     return _literal_join(node, constants)
 
 
+def literal_collection(
+    node: ast.AST | None,
+    constants: dict[str, str],
+    collections: dict[str, LiteralValue] | None = None,
+) -> LiteralValue | None:
+    """Resolve a literal string, str sequence, or str→str mapping.
+
+    Only fully static values are returned. A single non-literal element makes
+    the whole collection unknown, because a partially known loop would emit
+    lineage that the code does not have.
+    """
+    if node is None:
+        return None
+    if isinstance(node, ast.Name) and collections is not None:
+        known = collections.get(node.id)
+        if known is not None:
+            return known
+    direct = _literal_join(node, constants)
+    if direct is not None:
+        return direct
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        items: list[str] = []
+        for element in node.elts:
+            value = _literal_join(element, constants)
+            if value is None:
+                return None
+            items.append(value)
+        return tuple(items)
+    if isinstance(node, ast.Dict):
+        mapping: dict[str, str] = {}
+        for key, value in zip(node.keys, node.values, strict=False):
+            if key is None:
+                return None
+            key_text = _literal_join(key, constants)
+            value_text = _literal_join(value, constants)
+            if key_text is None or value_text is None:
+                return None
+            mapping[key_text] = value_text
+        return mapping
+    return None
+
+
+def collect_literal_collections(
+    body: list[ast.stmt],
+    constants: dict[str, str],
+) -> dict[str, LiteralValue]:
+    """Collect `NAME = {...}` / `NAME = [...]` literal assignments in a body."""
+    found: dict[str, LiteralValue] = {}
+    for stmt in body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        if not isinstance(target, ast.Name) or value is None:
+            continue
+        if isinstance(value, ast.Constant) or isinstance(value, ast.JoinedStr):
+            continue
+        literal = literal_collection(value, constants, found)
+        if isinstance(literal, (tuple, dict)):
+            found[target.id] = literal
+    return found
+
+
+def relation_key(name: str) -> str | None:
+    """Case-folded relation name used to match code references against SQL."""
+    try:
+        return normalize_sql_table_name(name)
+    except ValueError:
+        return None
+
+
 def sql_argument(node: ast.AST | None, constants: dict[str, str]) -> str | None:
     """Return literal SQL from a string or `text(\"...\")` argument."""
     direct = static_string(node, constants)
@@ -185,7 +267,11 @@ class ScopeVisitor(ast.NodeVisitor):
         self.class_stack: list[str] = []
         self.func_stack: list[str] = []
         module_body = tree.body if isinstance(tree, ast.Module) else []
-        self._const_stack: list[dict[str, str]] = [collect_string_constants(module_body)]
+        module_constants = collect_string_constants(module_body)
+        self._const_stack: list[dict[str, str]] = [module_constants]
+        self._coll_stack: list[dict[str, LiteralValue]] = [
+            collect_literal_collections(module_body, module_constants)
+        ]
 
     @property
     def constants(self) -> dict[str, str]:
@@ -195,11 +281,27 @@ class ScopeVisitor(ast.NodeVisitor):
             merged.update(layer)
         return merged
 
+    @property
+    def collections(self) -> dict[str, LiteralValue]:
+        """Merged literal collections, inner scope winning."""
+        merged: dict[str, LiteralValue] = {}
+        for layer in self._coll_stack:
+            merged.update(layer)
+        return merged
+
+    def push_bindings(self, bindings: dict[str, str]) -> None:
+        """Push statically known name→string bindings, e.g. unrolled loop vars."""
+        self._const_stack.append(dict(bindings))
+
+    def pop_bindings(self) -> None:
+        """Drop the innermost binding layer."""
+        self._const_stack.pop()
+
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.class_stack.append(node.name)
-        self._const_stack.append(collect_string_constants(node.body))
+        self._push_scope(node.body)
         self.generic_visit(node)
-        self._const_stack.pop()
+        self._pop_scope()
         self.class_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -210,10 +312,19 @@ class ScopeVisitor(ast.NodeVisitor):
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self.func_stack.append(node.name)
-        self._const_stack.append(collect_string_constants(node.body))
+        self._push_scope(node.body)
         self.generic_visit(node)
-        self._const_stack.pop()
+        self._pop_scope()
         self.func_stack.pop()
+
+    def _push_scope(self, body: list[ast.stmt]) -> None:
+        constants = collect_string_constants(body)
+        self._const_stack.append(constants)
+        self._coll_stack.append(collect_literal_collections(body, self.constants))
+
+    def _pop_scope(self) -> None:
+        self._coll_stack.pop()
+        self._const_stack.pop()
 
     def transform_id(self) -> str:
         """Return the enclosing function id, else the module id."""
@@ -317,10 +428,24 @@ class LineageSink:
             )
         return self.add_node(node)
 
-    def ensure_sql_table(self, name: str, line: int | None) -> str:
-        """Ensure a canonical physical table node."""
+    def ensure_sql_table(
+        self,
+        name: str,
+        line: int | None,
+        *,
+        relation_ref: bool = False,
+    ) -> str:
+        """Ensure a canonical physical table node.
+
+        `relation_ref` marks a name read from code rather than a declaration, so
+        repository-level identity resolution can absorb it into a logical
+        pipeline dataset declared in another file.
+        """
         node_id = make_sql_table_id(name)
         short = name.split(".")[-1]
+        metadata: dict[str, object] = {"table": name}
+        if relation_ref:
+            metadata["relation_ref"] = True
         return self.add_node(
             Node(
                 id=node_id,
@@ -328,9 +453,46 @@ class LineageSink:
                 type=NodeType.SQL_TABLE,
                 file_path=self.file_path,
                 line_number=line,
-                metadata={"table": name},
+                metadata=metadata,
             )
         )
+
+    def ensure_temp_view(
+        self,
+        module: str,
+        name: str,
+        line: int | None,
+        *,
+        created_by: str | None = None,
+    ) -> str:
+        """Ensure a Spark temp-view alias node. Not a physical table."""
+        node_id = make_temp_view_id(module, name)
+        metadata: dict[str, object] = {"temp_view": True, "view": name}
+        if created_by:
+            metadata["created_by"] = created_by
+        return self.add_node(
+            Node(
+                id=node_id,
+                name=name,
+                type=NodeType.TEMP_VIEW,
+                file_path=self.file_path,
+                line_number=line,
+                metadata=metadata,
+            )
+        )
+
+    def sql_facts(
+        self,
+        sql: str,
+        *,
+        dialects: tuple[str | None, ...] | None = None,
+    ) -> list[SqlLineageFact]:
+        """Parse embedded SQL, recording a warning instead of raising."""
+        facts, error = extract_sql_lineage(sql, dialects=dialects)
+        if error:
+            self.warnings.append(f"Warning: unable to parse SQL in {self.file_path}: {error}")
+            return []
+        return facts
 
     def attach_sql(
         self,
@@ -340,22 +502,29 @@ class LineageSink:
         line: int | None,
         operation: str,
         framework: str | None = None,
+        resolve: RelationResolver | None = None,
+        consumer: str | None = None,
+        dialects: tuple[str | None, ...] | None = None,
     ) -> None:
-        """Attach sqlglot lineage through the enclosing Python transform."""
-        facts, error = extract_sql_lineage(sql)
-        if error:
-            self.warnings.append(
-                f"Warning: unable to parse SQL in {self.file_path}: {error}"
-            )
+        """Attach sqlglot lineage through a consuming node.
+
+        `resolve` maps a relation name to a node id, so a parser can send temp
+        views to alias nodes instead of fabricating physical tables. `consumer`
+        overrides the enclosing Python transform, which is how a
+        `spark.sql(...).createOrReplaceTempView(...)` chain routes its sources
+        into the temp view rather than back through its own function.
+        """
+        facts = self.sql_facts(sql, dialects=dialects)
+        if not facts:
             return
-        transform = self.ensure_transform(visitor, line)
+        relation = resolve or (lambda name, at: self.ensure_sql_table(name, at))
+        target_node = consumer or self.ensure_transform(visitor, line)
         extra = {"sql": "embedded"}
         for fact in facts:
             for source in fact.sources:
-                table_id = self.ensure_sql_table(source, line)
                 self.add_edge(
-                    table_id,
-                    transform,
+                    relation(source, line),
+                    target_node,
                     edge_type=EdgeType.READ_BY,
                     confidence=Confidence.HIGH,
                     evidence=operation,
@@ -365,10 +534,9 @@ class LineageSink:
                     extra=extra,
                 )
             if fact.target:
-                target_id = self.ensure_sql_table(fact.target, line)
                 self.add_edge(
-                    transform,
-                    target_id,
+                    target_node,
+                    relation(fact.target, line),
                     edge_type=EdgeType.WRITES_TO,
                     confidence=Confidence.HIGH,
                     evidence=operation,

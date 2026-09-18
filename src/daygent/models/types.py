@@ -32,6 +32,7 @@ class NodeType(StrEnum):
     VECTOR_COLLECTION = "vector_collection"
     EXTERNAL_SYSTEM = "external_system"
     PIPELINE_DATASET = "pipeline_dataset"
+    TEMP_VIEW = "temp_view"
     DJANGO_MODEL = "django_model"
     SQLALCHEMY_MODEL = "sqlalchemy_model"
 

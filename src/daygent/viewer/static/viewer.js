@@ -18,20 +18,36 @@
     vector_collection: "#c4b5fd",
     external_system: "#f87171",
     pipeline_dataset: "#5eead4",
+    temp_view: "#a3a3a3",
     django_model: "#86efac",
     sqlalchemy_model: "#67e8f9"
   };
+
+  /* Layer names are read off canonical asset names only; they never imply an edge. */
+  var NAMESPACES = ["bronze", "silver", "gold"];
 
   var NODE_W = 188;
   var NODE_H = 52;
   var GAP_X = 86;
   var GAP_Y = 36;
+  var COMPONENT_GAP_X = 120;
+  var COMPONENT_GAP_Y = 90;
+  /* Wrap component rows instead of growing one endless vertical tower. */
+  var MAX_ROW_HEIGHT = 1600;
+  var MAX_ROW_WIDTH = 5200;
 
   var raw = document.getElementById("daygent-data").textContent;
   var data = JSON.parse(raw);
   var nodes = data.nodes || [];
-  var edges = (data.edges || []).filter(function (edge) {
+  var detailedEdges = (data.edges || []).filter(function (edge) {
     return edge && edge.source && edge.target;
+  });
+  var assetEdges = (data.asset_edges || []).filter(function (edge) {
+    return edge && edge.source && edge.target;
+  });
+  var assetTypes = {};
+  (data.asset_types || []).forEach(function (type) {
+    assetTypes[type] = true;
   });
 
   var byId = {};
@@ -39,13 +55,19 @@
     byId[node.id] = node;
   });
 
+  var edges = detailedEdges;
   var outgoing = {};
   var incoming = {};
-  edges.forEach(function (edge) {
-    if (!byId[edge.source] || !byId[edge.target]) return;
-    (outgoing[edge.source] || (outgoing[edge.source] = [])).push(edge.target);
-    (incoming[edge.target] || (incoming[edge.target] = [])).push(edge.source);
-  });
+
+  function rebuildAdjacency(edgeList) {
+    outgoing = {};
+    incoming = {};
+    edgeList.forEach(function (edge) {
+      if (!byId[edge.source] || !byId[edge.target]) return;
+      (outgoing[edge.source] || (outgoing[edge.source] = [])).push(edge.target);
+      (incoming[edge.target] || (incoming[edge.target] = [])).push(edge.source);
+    });
+  }
 
   var svg = document.getElementById("canvas");
   var tooltip = document.getElementById("tooltip");
@@ -68,11 +90,22 @@
   var hoverId = null;
   var highlight = null;
   var typeFilter = "";
-  var hideFunctions = true;
+  var showDetails = false;
+  var filterMode = "context";
+  var focusId = null;
   var query = "";
+  var searchMatches = [];
+  var searchCursor = 0;
   var nodeEls = {};
   var edgeEls = [];
   var positions = {};
+  var drawnNodes = [];
+  var drawnEdges = [];
+
+  /* Asset lineage is the default read: implementation nodes stay in the data
+     but are contracted into `asset_edges` until the user asks for detail. */
+  var hasAssetView = assetEdges.length > 0
+    || nodes.some(function (node) { return assetTypes[node.type]; });
 
   if (data.includes_source) {
     var banner = document.getElementById("source-banner");
@@ -163,91 +196,282 @@
     return filter;
   }
 
-  function layout(nodeList, edgeList) {
-    var rank = {};
-    var indeg = {};
+  function adjacencyOf(nodeList, edgeList) {
     var out = {};
     var inc = {};
+    var present = {};
     nodeList.forEach(function (node) {
-      indeg[node.id] = 0;
+      present[node.id] = true;
       out[node.id] = [];
       inc[node.id] = [];
     });
     edgeList.forEach(function (edge) {
-      if (indeg[edge.target] == null || indeg[edge.source] == null) return;
-      indeg[edge.target] += 1;
+      if (!present[edge.source] || !present[edge.target]) return;
+      if (edge.source === edge.target) return;
       out[edge.source].push(edge.target);
       inc[edge.target].push(edge.source);
     });
-    var queue = [];
-    nodeList.forEach(function (node) {
-      rank[node.id] = 0;
-      if (!indeg[node.id]) queue.push(node.id);
-    });
-    var seen = {};
-    while (queue.length) {
-      var id = queue.shift();
-      if (seen[id]) continue;
-      seen[id] = true;
-      (out[id] || []).forEach(function (next) {
-        rank[next] = Math.max(rank[next] || 0, (rank[id] || 0) + 1);
-        indeg[next] -= 1;
-        if (indeg[next] <= 0) queue.push(next);
-      });
-    }
-    var columns = {};
-    nodeList.forEach(function (node) {
-      var r = rank[node.id] || 0;
-      (columns[r] || (columns[r] = [])).push(node.id);
-    });
-    Object.keys(columns).forEach(function (r) {
-      columns[r].sort();
-    });
-    for (var pass = 0; pass < 2; pass += 1) {
-      Object.keys(columns).sort(function (a, b) { return a - b; }).forEach(function (r) {
-        columns[r].sort(function (a, b) {
-          return neighborScore(a) - neighborScore(b) || (a < b ? -1 : 1);
-        });
-      });
-    }
-    var pos = {};
-    Object.keys(columns).forEach(function (r) {
-      columns[r].forEach(function (nid, index) {
-        pos[nid] = {
-          x: Number(r) * (NODE_W + GAP_X),
-          y: index * (NODE_H + GAP_Y)
-        };
-      });
-    });
-    return pos;
+    return { out: out, inc: inc };
+  }
 
-    function neighborScore(nid) {
-      var neighbors = (inc[nid] || []).concat(out[nid] || []);
-      if (!neighbors.length) return 0;
-      var sum = 0;
-      neighbors.forEach(function (other) {
-        var col = columns[rank[other] || 0] || [];
-        sum += col.indexOf(other);
+  /* Weakly connected components, so unrelated pipelines are laid out apart
+     instead of all piling into rank 0 of one shared column. */
+  function components(nodeList, adj) {
+    var seen = {};
+    var groups = [];
+    nodeList.forEach(function (node) {
+      if (seen[node.id]) return;
+      var group = [];
+      var stack = [node.id];
+      while (stack.length) {
+        var id = stack.pop();
+        if (seen[id]) continue;
+        seen[id] = true;
+        group.push(id);
+        (adj.out[id] || []).forEach(function (next) {
+          if (!seen[next]) stack.push(next);
+        });
+        (adj.inc[id] || []).forEach(function (prev) {
+          if (!seen[prev]) stack.push(prev);
+        });
+      }
+      group.sort();
+      groups.push(group);
+    });
+    return groups;
+  }
+
+  /* Longest-path layering. Cycles are broken by the visit guard, so a
+     temp-view loop or mutual import cannot hang the layout. */
+  function rankComponent(group, adj) {
+    var rank = {};
+    var inGroup = {};
+    group.forEach(function (id) {
+      rank[id] = 0;
+      inGroup[id] = true;
+    });
+    var roots = group.filter(function (id) {
+      return !(adj.inc[id] || []).some(function (prev) { return inGroup[prev]; });
+    });
+    if (!roots.length) roots = [group[0]];
+    var guard = group.length * group.length + group.length;
+    var queue = roots.slice();
+    while (queue.length && guard > 0) {
+      guard -= 1;
+      var id = queue.shift();
+      (adj.out[id] || []).forEach(function (next) {
+        if (!inGroup[next]) return;
+        var candidate = rank[id] + 1;
+        if (candidate > rank[next]) {
+          rank[next] = candidate;
+          queue.push(next);
+        }
       });
-      return sum / neighbors.length;
+    }
+    return rank;
+  }
+
+  function orderColumns(group, adj, rank) {
+    var columns = {};
+    group.forEach(function (id) {
+      var r = rank[id] || 0;
+      (columns[r] || (columns[r] = [])).push(id);
+    });
+    var order = Object.keys(columns).map(Number).sort(function (a, b) { return a - b; });
+    order.forEach(function (r) {
+      columns[r].sort(function (a, b) {
+        return namespaceRank(a) - namespaceRank(b) || (a < b ? -1 : 1);
+      });
+    });
+    var index = {};
+    order.forEach(function (r) {
+      columns[r].forEach(function (id, i) { index[id] = i; });
+    });
+    /* Barycenter sweeps: pull each node next to its neighbours to cut crossings. */
+    for (var pass = 0; pass < 3; pass += 1) {
+      var forward = pass % 2 === 0;
+      var sweep = forward ? order : order.slice().reverse();
+      sweep.forEach(function (r) {
+        columns[r].sort(function (a, b) {
+          return barycenter(a, forward) - barycenter(b, forward)
+            || namespaceRank(a) - namespaceRank(b)
+            || (a < b ? -1 : 1);
+        });
+        columns[r].forEach(function (id, i) { index[id] = i; });
+      });
+    }
+    return { columns: columns, order: order };
+
+    function barycenter(id, forward) {
+      var side = forward ? (adj.inc[id] || []) : (adj.out[id] || []);
+      var neighbors = side.length ? side : (adj.inc[id] || []).concat(adj.out[id] || []);
+      if (!neighbors.length) return index[id] != null ? index[id] : 0;
+      var sum = 0;
+      var count = 0;
+      neighbors.forEach(function (other) {
+        if (index[other] == null) return;
+        sum += index[other];
+        count += 1;
+      });
+      return count ? sum / count : (index[id] || 0);
     }
   }
 
-  function structuralVisible(node) {
-    if (typeFilter && node.type !== typeFilter) return false;
-    if (hideFunctions && node.type === "python_function" && typeFilter !== "python_function") {
-      return false;
+  function layoutComponent(group, adj) {
+    var rank = rankComponent(group, adj);
+    var laid = orderColumns(group, adj, rank);
+    var local = {};
+    var width = 0;
+    var height = 0;
+    laid.order.forEach(function (r, column) {
+      laid.columns[r].forEach(function (id, row) {
+        var x = column * (NODE_W + GAP_X);
+        var y = row * (NODE_H + GAP_Y);
+        local[id] = { x: x, y: y };
+        width = Math.max(width, x + NODE_W);
+        height = Math.max(height, y + NODE_H);
+      });
+    });
+    return { positions: local, width: width, height: height, size: group.length };
+  }
+
+  function layout(nodeList, edgeList) {
+    var adj = adjacencyOf(nodeList, edgeList);
+    var groups = components(nodeList, adj);
+    var singles = [];
+    var blocks = [];
+    groups.forEach(function (group) {
+      if (group.length === 1) {
+        singles.push(group[0]);
+        return;
+      }
+      blocks.push(layoutComponent(group, adj));
+    });
+    /* Bigger lineage chains first; the reader should meet them before strays. */
+    blocks.sort(function (a, b) {
+      return b.size - a.size || b.width - a.width;
+    });
+    if (singles.length) blocks.push(gridBlock(singles));
+
+    var pos = {};
+    var rowTop = 0;
+    var rowLeft = 0;
+    var rowHeight = 0;
+    blocks.forEach(function (block) {
+      var wrapWidth = rowLeft > 0 && rowLeft + block.width > MAX_ROW_WIDTH;
+      var wrapHeight = rowLeft > 0 && rowHeight > 0
+        && Math.max(rowHeight, block.height) > MAX_ROW_HEIGHT;
+      if (wrapWidth || wrapHeight) {
+        rowTop += rowHeight + COMPONENT_GAP_Y;
+        rowLeft = 0;
+        rowHeight = 0;
+      }
+      Object.keys(block.positions).forEach(function (id) {
+        pos[id] = {
+          x: block.positions[id].x + rowLeft,
+          y: block.positions[id].y + rowTop
+        };
+      });
+      rowLeft += block.width + COMPONENT_GAP_X;
+      rowHeight = Math.max(rowHeight, block.height);
+    });
+    return pos;
+  }
+
+  /* Disconnected nodes carry no direction, so they pack as a block rather than
+     stretching the canvas into a single column. */
+  function gridBlock(ids) {
+    var perColumn = Math.max(1, Math.floor(MAX_ROW_HEIGHT / (NODE_H + GAP_Y)));
+    var columns = Math.max(1, Math.ceil(ids.length / perColumn));
+    var rows = Math.ceil(ids.length / columns);
+    var local = {};
+    var width = 0;
+    var height = 0;
+    ids.slice().sort().forEach(function (id, i) {
+      var column = Math.floor(i / rows);
+      var row = i % rows;
+      var x = column * (NODE_W + GAP_X);
+      var y = row * (NODE_H + GAP_Y);
+      local[id] = { x: x, y: y };
+      width = Math.max(width, x + NODE_W);
+      height = Math.max(height, y + NODE_H);
+    });
+    return { positions: local, width: width, height: height, size: 1 };
+  }
+
+  function namespaceOf(node) {
+    if (!node) return "";
+    var id = String(node.id || "");
+    var cut = id.indexOf(":");
+    var qualified = (cut === -1 ? id : id.slice(cut + 1)).toLowerCase();
+    for (var i = 0; i < NAMESPACES.length; i += 1) {
+      var layer = NAMESPACES[i];
+      if (qualified.indexOf(layer + ".") === 0 || qualified.indexOf("." + layer + ".") !== -1) {
+        return layer;
+      }
     }
-    return true;
+    return "";
+  }
+
+  function namespaceRank(id) {
+    var layer = namespaceOf(byId[id]);
+    var at = NAMESPACES.indexOf(layer);
+    return at === -1 ? NAMESPACES.length : at;
+  }
+
+  function inViewMode(node) {
+    if (showDetails || !hasAssetView) return true;
+    return !!assetTypes[node.type];
+  }
+
+  function activeEdges() {
+    return showDetails || !hasAssetView ? detailedEdges : assetEdges;
+  }
+
+  function contextOf(ids, edgeList) {
+    var set = {};
+    Object.keys(ids).forEach(function (id) { set[id] = true; });
+    edgeList.forEach(function (edge) {
+      if (ids[edge.source]) set[edge.target] = true;
+      if (ids[edge.target]) set[edge.source] = true;
+    });
+    return set;
+  }
+
+  function componentIds(startId, nodeList, edgeList) {
+    var adj = adjacencyOf(nodeList, edgeList);
+    var seen = {};
+    var stack = [startId];
+    while (stack.length) {
+      var id = stack.pop();
+      if (seen[id]) continue;
+      seen[id] = true;
+      (adj.out[id] || []).forEach(function (next) { if (!seen[next]) stack.push(next); });
+      (adj.inc[id] || []).forEach(function (prev) { if (!seen[prev]) stack.push(prev); });
+    }
+    return seen;
   }
 
   function structuralGraph() {
-    var vis = nodes.filter(structuralVisible);
+    var edgeList = activeEdges();
+    var vis = nodes.filter(inViewMode);
+    if (focusId && byId[focusId]) {
+      var keep = componentIds(focusId, vis, edgeList);
+      vis = vis.filter(function (node) { return keep[node.id]; });
+    }
+    if (typeFilter) {
+      var matching = {};
+      vis.forEach(function (node) {
+        if (node.type === typeFilter) matching[node.id] = true;
+      });
+      var allowed = filterMode === "only" ? matching : contextOf(matching, edgeList);
+      vis = vis.filter(function (node) { return allowed[node.id]; });
+    }
     var ids = {};
     vis.forEach(function (node) { ids[node.id] = true; });
     return {
       nodes: vis,
-      edges: edges.filter(function (edge) {
+      edges: edgeList.filter(function (edge) {
         return ids[edge.source] && ids[edge.target];
       })
     };
@@ -255,6 +479,10 @@
 
   function relayout() {
     var subset = structuralGraph();
+    drawnNodes = subset.nodes;
+    drawnEdges = subset.edges;
+    edges = drawnEdges;
+    rebuildAdjacency(drawnEdges);
     positions = layout(subset.nodes, subset.edges);
     draw();
     fillStats();
@@ -286,7 +514,7 @@
     nodeEls = {};
     edgeEls = [];
     var stroke = edgeColor();
-    edges.forEach(function (edge) {
+    drawnEdges.forEach(function (edge) {
       var geom = edgePath(edge);
       if (!geom) return;
       var g = svgEl("g", {
@@ -325,11 +553,16 @@
       edgeLayer.appendChild(g);
       edgeEls.push({ el: g, edge: edge, label: label });
     });
-    nodes.forEach(function (node) {
+    drawnNodes.forEach(function (node) {
       var p = positions[node.id];
       if (!p) return;
       var color = TYPE_COLORS[node.type] || "#64748b";
-      var g = svgEl("g", { class: "node", "data-id": node.id });
+      var layer = namespaceOf(node);
+      var g = svgEl("g", {
+        class: "node",
+        "data-id": node.id,
+        "data-namespace": layer || "other"
+      });
       g.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
       g.appendChild(svgEl("rect", {
         class: "card",
@@ -367,6 +600,17 @@
       });
       sub.textContent = truncate(typeLabel(node.type), 24);
       g.appendChild(sub);
+      if (layer) {
+        var badge = svgEl("text", {
+          x: String(NODE_W - 12),
+          y: "38",
+          "text-anchor": "end",
+          fill: color,
+          class: "node-namespace"
+        });
+        badge.textContent = layer;
+        g.appendChild(badge);
+      }
       g.addEventListener("mousedown", function (event) {
         event.stopPropagation();
         var pt = graphPoint(event);
@@ -499,14 +743,46 @@
   }
 
   function visibleIds() {
-    return nodes.filter(matchesFilters).map(function (node) { return node.id; });
+    return drawnNodes.map(function (node) { return node.id; });
   }
 
-  function matchesFilters(node) {
-    if (!structuralVisible(node)) return false;
-    if (!query) return true;
+  /* Search never deletes the graph: a query marks matches and their immediate
+     lineage, and everything else is dimmed so the context stays readable. */
+  function matchesQuery(node) {
+    if (!query) return false;
     var hay = (node.name + " " + node.id + " " + node.type + " " + (node.label || "")).toLowerCase();
     return hay.indexOf(query) !== -1;
+  }
+
+  function isContextNode(node) {
+    if (typeFilter && node.type !== typeFilter) return true;
+    return false;
+  }
+
+  function refreshSearchMatches() {
+    searchMatches = query
+      ? drawnNodes.filter(matchesQuery).map(function (node) { return node.id; })
+      : [];
+    if (searchCursor >= searchMatches.length) searchCursor = 0;
+  }
+
+  function searchSet() {
+    if (!searchMatches.length) return null;
+    var set = {};
+    searchMatches.forEach(function (id) {
+      set[id] = true;
+      (incoming[id] || []).forEach(function (prev) { set[prev] = true; });
+      (outgoing[id] || []).forEach(function (next) { set[next] = true; });
+    });
+    return set;
+  }
+
+  function stepSearch(delta) {
+    if (!searchMatches.length) return;
+    searchCursor = (searchCursor + delta + searchMatches.length) % searchMatches.length;
+    var id = searchMatches[searchCursor];
+    selectNode(id);
+    focusNode(id);
   }
 
   function highlightPair(a, b) {
@@ -554,14 +830,19 @@
     var visible = {};
     visibleIds().forEach(function (id) { visible[id] = true; });
     var related = highlightSet();
+    var matched = searchSet();
     Object.keys(nodeEls).forEach(function (id) {
       var el = nodeEls[id];
       var show = !!visible[id];
       el.style.display = show ? "" : "none";
-      el.classList.remove("dim", "hl", "selected");
+      el.classList.remove("dim", "hl", "selected", "context");
       if (!show) return;
       if (id === selectedId) el.classList.add("selected");
-      if (related) {
+      if (isContextNode(byId[id] || {})) el.classList.add("context");
+      if (matched) {
+        var isMatch = searchMatches.indexOf(id) !== -1;
+        el.classList.add(isMatch ? "hl" : (matched[id] ? "context" : "dim"));
+      } else if (related) {
         el.classList.add(related[id] ? "hl" : "dim");
       } else if (hoverId && id !== hoverId && !connected(hoverId, id)) {
         el.classList.add("dim");
@@ -579,7 +860,11 @@
       item.el.classList.remove("dim", "hl");
       if (!show) return;
       var on = false;
-      if (related) {
+      if (matched) {
+        on = searchMatches.indexOf(item.edge.source) !== -1
+          || searchMatches.indexOf(item.edge.target) !== -1;
+        if (!on) item.el.classList.add("dim");
+      } else if (related) {
         on = !!(related[item.edge.source] && related[item.edge.target]
           && (item.edge.source === selectedId || item.edge.target === selectedId
             || (selectedEdge && item.edge.source === selectedEdge.source
@@ -664,11 +949,39 @@
     refreshVisibility();
   }
 
+  /* Focus lineage reduces the canvas to the one connected flow a developer is
+     reading, which is what makes a large repository usable. */
+  function focusLineage(id) {
+    if (!id || !byId[id]) return;
+    focusId = id;
+    relayout();
+    if (!positions[id]) {
+      focusId = null;
+      relayout();
+      return;
+    }
+    selectedId = id;
+    refreshVisibility();
+    fit();
+  }
+
+  function clearFocus() {
+    if (!focusId) return;
+    focusId = null;
+    relayout();
+    refreshVisibility();
+    fit();
+  }
+
   function syncActionButtons() {
     ["upstream", "downstream", "impact"].forEach(function (mode) {
-      var btn = document.getElementById("btn-" + (mode === "impact" ? "impact" : mode));
+      var btn = document.getElementById("btn-" + mode);
       if (btn) btn.classList.toggle("active", highlight === mode);
     });
+    var focusBtn = document.getElementById("btn-focus");
+    if (focusBtn) focusBtn.classList.toggle("active", !!focusId);
+    var clearFocusBtn = document.getElementById("btn-clear-focus");
+    if (clearFocusBtn) clearFocusBtn.hidden = !focusId;
     var inspect = document.getElementById("inspect-actions");
     if (inspect) inspect.style.display = selectedId ? "" : "none";
   }
@@ -807,9 +1120,37 @@
     row.className = "conn-row";
     row.textContent = connectionLabel(edge);
     list.appendChild(row);
+    renderViaPath(edge, list);
 
     renderSource(edge);
     renderMetadata(edge.metadata || {}, ["file_path", "line_number", "reference", "evidence"]);
+  }
+
+  /* A contracted asset edge hides real hops. Show them so the visual
+     simplification never costs the reader the actual path. */
+  function renderViaPath(edge, list) {
+    var meta = edge.metadata || {};
+    var via = meta.via;
+    if (!via || !via.length) return;
+    var heading = document.createElement("div");
+    heading.className = "kv-key";
+    heading.textContent = "Path (" + via.length + " hidden hop"
+      + (via.length === 1 ? "" : "s") + ")";
+    list.appendChild(heading);
+    var path = document.createElement("div");
+    path.className = "via-path";
+    var chain = [edge.source].concat(via).concat([edge.target]);
+    chain.forEach(function (id, at) {
+      var step = document.createElement("div");
+      step.className = "via-step";
+      var node = byId[id];
+      step.textContent = (at === 0 ? "" : "↓ ") + (nodeTitle(node) || id);
+      if (node && at > 0 && at < chain.length - 1) {
+        step.textContent += "  (" + typeLabel(node.type) + ")";
+      }
+      path.appendChild(step);
+    });
+    list.appendChild(path);
   }
 
   function renderSource(item) {
@@ -931,8 +1272,9 @@
 
   function fillTypeFilter() {
     var select = document.getElementById("type-filter");
-    select.textContent = "";
     var types = uniqueTypes();
+    if (typeFilter && types.indexOf(typeFilter) === -1) typeFilter = "";
+    select.textContent = "";
     var all = document.createElement("option");
     all.value = "";
     all.textContent = "All types";
@@ -943,11 +1285,13 @@
       opt.textContent = typeLabel(type);
       select.appendChild(opt);
     });
+    select.value = typeFilter;
   }
 
   function uniqueTypes() {
     var types = [];
     nodes.forEach(function (node) {
+      if (!inViewMode(node)) return;
       if (types.indexOf(node.type) === -1) types.push(node.type);
     });
     types.sort();
@@ -968,21 +1312,35 @@
       sw.appendChild(document.createTextNode(typeLabel(type)));
       legend.appendChild(sw);
     });
+    var layers = NAMESPACES.filter(function (layer) {
+      return nodes.some(function (node) { return namespaceOf(node) === layer; });
+    });
+    layers.forEach(function (layer) {
+      var item = document.createElement("span");
+      item.className = "legend-item legend-namespace";
+      item.textContent = layer + ".*";
+      legend.appendChild(item);
+    });
   }
 
   function fillStats() {
     var el = document.getElementById("stats");
     el.textContent = "";
-    var shown = nodes.filter(matchesFilters).length;
     var nodesStat = document.createElement("span");
     var nodesN = document.createElement("strong");
-    nodesN.textContent = String(shown);
+    nodesN.textContent = String(drawnNodes.length);
     nodesStat.appendChild(nodesN);
     nodesStat.appendChild(document.createTextNode(" visible · "));
     var totalN = document.createElement("strong");
     totalN.textContent = String(nodes.length);
     nodesStat.appendChild(totalN);
     nodesStat.appendChild(document.createTextNode(" total"));
+    if (!showDetails && hasAssetView) {
+      nodesStat.appendChild(document.createTextNode(" · asset lineage"));
+    }
+    if (focusId && byId[focusId]) {
+      nodesStat.appendChild(document.createTextNode(" · focused on " + nodeTitle(byId[focusId])));
+    }
     el.appendChild(nodesStat);
   }
 
@@ -990,22 +1348,51 @@
     document.getElementById("theme-toggle").addEventListener("click", function () {
       applyTheme(isDark() ? "light" : "dark");
     });
-    document.getElementById("search").addEventListener("input", function (event) {
+    var search = document.getElementById("search");
+    search.addEventListener("input", function (event) {
       query = (event.target.value || "").trim().toLowerCase();
+      searchCursor = 0;
+      refreshSearchMatches();
       refreshVisibility();
+      if (searchMatches.length) {
+        selectNode(searchMatches[0]);
+        focusNode(searchMatches[0]);
+      }
+    });
+    search.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      stepSearch(event.shiftKey ? -1 : 1);
     });
     document.getElementById("type-filter").addEventListener("change", function (event) {
       typeFilter = event.target.value || "";
       relayout();
+      refreshSearchMatches();
+      refreshVisibility();
       fit();
     });
-    document.getElementById("hide-functions").addEventListener("change", function (event) {
-      hideFunctions = !!event.target.checked;
+    document.getElementById("filter-mode").addEventListener("change", function (event) {
+      filterMode = event.target.value === "only" ? "only" : "context";
       relayout();
+      refreshSearchMatches();
+      refreshVisibility();
+      fit();
+    });
+    document.getElementById("show-details").addEventListener("change", function (event) {
+      showDetails = !!event.target.checked;
+      relayout();
+      fillTypeFilter();
+      refreshSearchMatches();
+      refreshVisibility();
       fit();
     });
     document.getElementById("btn-fit").addEventListener("click", fit);
     document.getElementById("btn-reset-view").addEventListener("click", resetView);
+    document.getElementById("btn-focus").addEventListener("click", function () {
+      if (focusId) clearFocus();
+      else if (selectedId) focusLineage(selectedId);
+    });
+    document.getElementById("btn-clear-focus").addEventListener("click", clearFocus);
     document.getElementById("btn-upstream").addEventListener("click", function () {
       setHighlight("upstream");
     });

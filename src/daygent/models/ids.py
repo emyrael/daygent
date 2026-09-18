@@ -120,6 +120,19 @@ def make_pipeline_dataset_id(name: str) -> str:
     return make_node_id(NodeType.PIPELINE_DATASET, name.strip())
 
 
+def make_temp_view_id(module: str, name: str) -> str:
+    """Example: `temp_view:silver.pipeline:tmp_orders`.
+
+    Spark temp views are session-scoped at runtime, but Daygent resolves them
+    within the declaring file only, so identity is qualified by module.
+    """
+    return make_node_id(
+        NodeType.TEMP_VIEW,
+        module.strip() or "__main__",
+        normalize_sql_table_name(name),
+    )
+
+
 def make_django_model_id(qualified: str) -> str:
     """Example: `django_model:customers.Customer`."""
     return make_node_id(NodeType.DJANGO_MODEL, qualified.strip())
@@ -167,6 +180,7 @@ embedding_model_id = make_embedding_model_id
 vector_store_id = make_vector_store_id
 vector_collection_id = make_vector_collection_id
 pipeline_dataset_id = make_pipeline_dataset_id
+temp_view_id = make_temp_view_id
 django_model_id = make_django_model_id
 sqlalchemy_model_id = make_sqlalchemy_model_id
 external_system_id = make_external_system_id

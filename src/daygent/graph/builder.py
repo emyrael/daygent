@@ -1,7 +1,8 @@
 """Merge parser results into one Graph.
 
-v0.1 dangling-edge rule: if either endpoint is missing, drop the edge and
-add a warning. Parser edge direction is never reversed.
+Dangling-edge rule: if either endpoint is missing, drop the edge and add a
+warning, unless the edge is marked `provisional` (a cross-file guess that is
+expected to miss). Parser edge direction is never reversed.
 
 Locked convention: A → B means B depends on A
 (example: raw_users → stg_users → recommend() → POST /recommend).
@@ -69,9 +70,13 @@ def build_graph(
         if edge.source in unresolved_imports or edge.target in unresolved_imports:
             continue
         if edge.source not in nodes or edge.target not in nodes:
-            warnings.append(
-                f"Dropped dangling edge {edge.source} -> {edge.target} ({edge.type})"
-            )
+            # A provisional edge is a best-effort guess (an imported symbol that
+            # may be a class, a constant, or a third-party name). Dropping it is
+            # the expected outcome, not a finding worth reporting.
+            if not edge.metadata.get("provisional"):
+                warnings.append(
+                    f"Dropped dangling edge {edge.source} -> {edge.target} ({edge.type})"
+                )
             continue
         kept_edges.append(edge)
 

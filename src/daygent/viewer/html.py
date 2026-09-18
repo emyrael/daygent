@@ -7,6 +7,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from daygent.graph.assets import ASSET_TYPES, project_asset_graph
 from daygent.graph.render import display_name
 from daygent.models import Graph
 from daygent.viewer.source import excerpt_around, safe_repo_file
@@ -48,18 +49,27 @@ __DAYGENT_CSS__
       <div class="actions">
         <button type="button" id="btn-fit">Fit</button>
         <button type="button" id="btn-reset-view">Reset view</button>
+        <button type="button" id="btn-clear-focus" hidden>Clear focus</button>
       </div>
       <label class="field">
         Search nodes
         <input id="search" type="search" placeholder="Name or id" autocomplete="off">
       </label>
+      <p class="hint">Enter cycles matches · Shift+Enter goes back</p>
       <label class="field">
         Filter by type
         <select id="type-filter"></select>
       </label>
+      <label class="field">
+        When filtering
+        <select id="filter-mode">
+          <option value="context">Keep lineage context</option>
+          <option value="only">Show matches only</option>
+        </select>
+      </label>
       <label class="check">
-        <input id="hide-functions" type="checkbox" checked>
-        Hide Python functions
+        <input id="show-details" type="checkbox">
+        Show implementation details
       </label>
       <div id="legend" class="legend"></div>
     </section>
@@ -72,6 +82,7 @@ __DAYGENT_CSS__
           <button type="button" id="btn-upstream">Direct upstream</button>
           <button type="button" id="btn-downstream">Direct downstream</button>
           <button type="button" id="btn-impact">Blast radius</button>
+          <button type="button" id="btn-focus">Focus lineage</button>
           <button type="button" id="btn-clear">Reset selection</button>
         </div>
         <section id="details-connections">
@@ -195,11 +206,27 @@ def viewer_payload(
             if excerpt is not None:
                 item["source_excerpt"] = excerpt
         edges.append(item)
+    projection = project_asset_graph(ordered)
+    asset_edges = [
+        {
+            "source": edge.source,
+            "target": edge.target,
+            "type": edge.type,
+            "confidence": str(edge.confidence) if edge.confidence else None,
+            "evidence": edge.evidence,
+            "metadata": dict(edge.metadata or {}),
+        }
+        for edge in projection.edges
+    ]
     return {
         "convention": "A → B means B depends on A",
         "includes_source": bool(include_source),
         "nodes": nodes,
         "edges": edges,
+        # Display-only contraction of implementation nodes. The detailed graph
+        # above is untouched and still powers impact analysis.
+        "asset_types": sorted(str(item) for item in ASSET_TYPES),
+        "asset_edges": asset_edges,
     }
 
 

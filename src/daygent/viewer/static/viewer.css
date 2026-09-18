@@ -401,6 +401,33 @@ main {
 }
 .dim { opacity: 0.16; }
 .hl { opacity: 1; }
+/* Context nodes are the lineage neighbours of a match: kept, but quiet. */
+.context { opacity: 0.55; }
+.node-namespace {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  pointer-events: none;
+  opacity: 0.85;
+}
+.legend-namespace {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.via-path {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 10px;
+  padding-left: 6px;
+  border-left: 2px solid var(--border);
+}
+.via-step {
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
 
 @keyframes flow {
   to { stroke-dashoffset: -32; }

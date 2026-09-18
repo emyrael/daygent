@@ -47,6 +47,7 @@ class _DefinitionCollector(ast.NodeVisitor):
         self.module_funcs: dict[str, str] = {}
         self.nested: dict[str, dict[str, str]] = {}
         self.class_methods: dict[str, dict[str, str]] = {}
+        self.known_ids: set[str] = set()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.class_stack.append(node.name)
@@ -72,6 +73,7 @@ class _DefinitionCollector(ast.NodeVisitor):
                 metadata={"qualified_name": qualified},
             )
         )
+        self.known_ids.add(func_id)
         if self.func_stack:
             parent = ".".join([*self.class_stack, *self.func_stack])
             self.nested.setdefault(parent, {})[node.name] = func_id
@@ -85,15 +87,24 @@ class _DefinitionCollector(ast.NodeVisitor):
 
 
 class _CallCollector(ast.NodeVisitor):
-    """Second pass: locally resolvable calls become callee → caller invoked_by."""
+    """Second pass: locally resolvable calls become callee → caller invoked_by.
+
+    Calls to symbols imported from another module resolve to that module's
+    function id and are marked provisional: the graph builder keeps them only
+    when that module was actually scanned.
+    """
 
     def __init__(
         self,
         module_id: str,
         defs: _DefinitionCollector,
+        imported_functions: dict[str, str] | None = None,
+        imported_modules: dict[str, str] | None = None,
     ) -> None:
         self.module_id = module_id
         self.defs = defs
+        self.imported_functions = imported_functions or {}
+        self.imported_modules = imported_modules or {}
         self.class_stack: list[str] = []
         self.func_stack: list[str] = []
         self.edges: list[Edge] = []
@@ -117,6 +128,12 @@ class _CallCollector(ast.NodeVisitor):
             key = (callee, caller)
             if key not in self._seen:
                 self._seen.add(key)
+                metadata = evidence_metadata(
+                    file_path=self.defs.file_path,
+                    line_number=node.lineno,
+                )
+                if callee not in self.defs.known_ids:
+                    metadata["provisional"] = True
                 self.edges.append(
                     Edge(
                         source=callee,
@@ -124,10 +141,7 @@ class _CallCollector(ast.NodeVisitor):
                         type=EdgeType.INVOKED_BY,
                         confidence=Confidence.HIGH,
                         evidence="ast.Call",
-                        metadata=evidence_metadata(
-                            file_path=self.defs.file_path,
-                            line_number=node.lineno,
-                        ),
+                        metadata=metadata,
                     )
                 )
         self.generic_visit(node)
@@ -144,12 +158,15 @@ class _CallCollector(ast.NodeVisitor):
         return make_python_function_id(self.defs.module, qualified)
 
     def _resolve_call(self, func: ast.expr) -> str | None:
-        """Resolve only static local names and self.method. Omit dynamic calls."""
+        """Resolve static local names, self.method, and imported symbols."""
         if isinstance(func, ast.Name):
             return self._resolve_name(func.id)
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
             if func.value.id == "self" and self.class_stack:
                 return self.defs.class_methods.get(self.class_stack[-1], {}).get(func.attr)
+            module = self.imported_modules.get(func.value.id)
+            if module:
+                return make_python_function_id(module, func.attr)
             return None
         return None
 
@@ -163,7 +180,10 @@ class _CallCollector(ast.NodeVisitor):
             method = self.defs.class_methods.get(self.class_stack[-1], {}).get(name)
             if method:
                 return method
-        return self.defs.module_funcs.get(name)
+        local = self.defs.module_funcs.get(name)
+        if local:
+            return local
+        return self.imported_functions.get(name)
 
 
 def _import_module_name(current_module: str, node: ast.ImportFrom) -> str | None:
@@ -177,6 +197,43 @@ def _import_module_name(current_module: str, node: ast.ImportFrom) -> str | None
             return ".".join([*base, *node.module.split(".")]) if base else node.module
         return ".".join(base) if base else None
     return node.module
+
+
+def collect_imported_symbols(
+    tree: ast.AST,
+    module: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Map local names to imported function ids and to imported module paths.
+
+    `from transforms.common import clean_orders` yields
+    `{"clean_orders": "python_function:transforms.common.clean_orders"}`, and
+    `import transforms.common as tc` yields `{"tc": "transforms.common"}` so
+    `tc.clean_orders(...)` resolves too. Dotted symbols may well be classes or
+    constants; the resulting edge is provisional and dropped if no such
+    function node exists.
+    """
+    functions: dict[str, str] = {}
+    modules: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if not alias.name:
+                    continue
+                local = alias.asname or alias.name.split(".", maxsplit=1)[0]
+                modules[local] = alias.name if alias.asname else local
+            continue
+        if not isinstance(node, ast.ImportFrom) or node.module == "__future__":
+            continue
+        resolved = _import_module_name(module, node)
+        if not resolved:
+            continue
+        for alias in node.names:
+            if not alias.name or alias.name == "*":
+                continue
+            local = alias.asname or alias.name
+            functions[local] = make_python_function_id(resolved, alias.name)
+            modules.setdefault(local, f"{resolved}.{alias.name}")
+    return functions, modules
 
 
 def collect_import_edges(
@@ -266,7 +323,8 @@ class PythonParser(BaseParser):
         )
         defs = _DefinitionCollector(module, relative)
         defs.visit(tree)
-        calls = _CallCollector(module_id, defs)
+        imported_functions, imported_modules = collect_imported_symbols(tree, module)
+        calls = _CallCollector(module_id, defs, imported_functions, imported_modules)
         calls.visit(tree)
         imported_nodes, import_edges = collect_import_edges(tree, module, module_id, relative)
         return ParseResult(

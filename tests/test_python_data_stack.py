@@ -44,7 +44,7 @@ def test_python_data_stack_core_chain() -> None:
     ) in pairs
     assert (
         "python_function:lakeflow_pipeline.order_metrics",
-        "pipeline_dataset:gold.order_metrics",
+        "sql_table:gold.order_metrics",
     ) in pairs
 
 
@@ -97,7 +97,7 @@ def test_python_data_stack_cli_scan_graph_impact(tmp_path: Path) -> None:
     html = runner.invoke(app, ["graph", "--html", "--root", str(stack)])
     assert html.exit_code == 0, html.output
     page = (stack / ".daygent" / "graph.html").read_text(encoding="utf-8")
-    assert "pipeline dataset" in page or "gold.order_metrics" in page
+    assert "gold.order_metrics" in page
     impact = runner.invoke(app, ["impact", "raw.orders", "--json", "--root", str(stack)])
     assert impact.exit_code == 0, impact.output
     payload = json.loads(impact.stdout)

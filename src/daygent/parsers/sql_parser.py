@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import sqlglot
@@ -14,7 +15,11 @@ from daygent.models.ids import make_sql_table_id, normalize_sql_table_name, posi
 from daygent.parsers.base import BaseParser, ParseContext, ParseResult
 from daygent.parsers.evidence import evidence_metadata
 
-_DIALECTS = (None, "postgres", "duckdb", "tsql", "mysql", "spark")
+_DIALECTS: tuple[str | None, ...] = (None, "postgres", "duckdb", "tsql", "mysql", "spark")
+# Spark/Databricks SQL uses backtick identifiers and `SELECT * EXCEPT(...)`,
+# which the generic dialect rejects. Callers parsing embedded Spark SQL should
+# try the spark dialect first instead of stumbling into a lenient fallback.
+SPARK_DIALECTS: tuple[str | None, ...] = ("spark", "databricks", None, "duckdb", "postgres")
 _SQL_STARTS = frozenset(
     {
         "select",
@@ -124,10 +129,13 @@ def looks_like_sql(text: str) -> bool:
     return first in _SQL_STARTS
 
 
-def parse_sql_statements(sql: str) -> tuple[list[exp.Expression], str | None]:
+def parse_sql_statements(
+    sql: str,
+    dialects: tuple[str | None, ...] | None = None,
+) -> tuple[list[exp.Expression], str | None]:
     """Parse SQL with sqlglot, trying a few dialects. Last error message on failure."""
     last_error: str | None = None
-    for dialect in _DIALECTS:
+    for dialect in dialects or _DIALECTS:
         try:
             statements = sqlglot.parse(sql, dialect=dialect)
         except (ParseError, TokenError, ValueError) as exc:
@@ -137,11 +145,15 @@ def parse_sql_statements(sql: str) -> tuple[list[exp.Expression], str | None]:
     return [], last_error or "unable to parse SQL"
 
 
-def extract_sql_lineage(sql: str) -> tuple[list[SqlLineageFact], str | None]:
-    """Return physical source/target tables from SQL text. Shared by .sql and Python."""
-    statements, error = parse_sql_statements(sql)
+@lru_cache(maxsize=512)
+def _cached_lineage(
+    sql: str,
+    dialects: tuple[str | None, ...],
+) -> tuple[tuple[SqlLineageFact, ...], str | None]:
+    """Parse-and-extract once per (sql, dialects). Embedded SQL repeats often."""
+    statements, error = parse_sql_statements(sql, dialects)
     if error:
-        return [], error
+        return (), error
     facts: list[SqlLineageFact] = []
     for statement in statements:
         ctes = _cte_names(statement)
@@ -153,7 +165,16 @@ def extract_sql_lineage(sql: str) -> tuple[list[SqlLineageFact], str | None]:
             kind = statement.key or statement.__class__.__name__
             if kind not in {"set", "command", "semicolon"}:
                 facts.append(SqlLineageFact(sources=(), target=None))
-    return facts, None
+    return tuple(facts), None
+
+
+def extract_sql_lineage(
+    sql: str,
+    dialects: tuple[str | None, ...] | None = None,
+) -> tuple[list[SqlLineageFact], str | None]:
+    """Return physical source/target tables from SQL text. Shared by .sql and Python."""
+    facts, error = _cached_lineage(sql, dialects or _DIALECTS)
+    return list(facts), error
 
 
 def lineage_from_sql(

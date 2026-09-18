@@ -193,10 +193,14 @@ def test_html_defaults_to_dark_mode_with_theme_toggle() -> None:
     assert "tooltip" in html
 
 
-def test_html_hides_python_functions_by_default() -> None:
+def test_html_defaults_to_asset_lineage_with_details_toggle() -> None:
     html = render_html(_graph())
-    assert 'id="hide-functions"' in html
-    assert re.search(r'id="hide-functions"[^>]*checked', html)
+    assert 'id="show-details"' in html
+    # Unchecked by default: the first view is asset lineage, not implementation.
+    assert not re.search(r'id="show-details"[^>]*checked', html)
+    assert 'var showDetails = false;' in html
+    assert '"asset_edges"' in html
+    assert '"asset_types"' in html
 
 
 def test_inspector_structure_and_direction_legend() -> None:
@@ -392,7 +396,9 @@ def test_existing_interactions_remain_in_viewer() -> None:
     for marker in (
         'id="search"',
         'id="type-filter"',
-        'id="hide-functions"',
+        'id="show-details"',
+        'id="filter-mode"',
+        'id="btn-focus"',
         'id="btn-fit"',
         'id="btn-reset-view"',
         'id="btn-upstream"',
