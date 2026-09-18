@@ -12,7 +12,7 @@ SRC = ROOT / "src" / "daygent"
 
 
 def test_version() -> None:
-    assert __version__ == "0.2.1"
+    assert __version__ == "0.2.2"
 
 
 def test_version_is_consistent_across_metadata() -> None:

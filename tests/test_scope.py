@@ -256,8 +256,10 @@ def test_lineage_fixture_scan_keeps_relevant_paths_only() -> None:
 
     pairs = {(edge.source, edge.target) for edge in report.graph.edges}
     assert ("vector_store:qdrant", "vector_collection:company_docs") in pairs
-    assert ("python_function:rag_app.retrieve_documents", "vector_store:qdrant") in pairs
-    assert ("python_function:rag_app.answer_question", "llm:openai:gpt-5") in pairs
+    # A store or model the function merely uses is an input to that function, so
+    # it points at the function and impact flows outward from the dependency.
+    assert ("vector_store:qdrant", "python_function:rag_app.retrieve_documents") in pairs
+    assert ("llm:openai:gpt-5", "python_function:rag_app.answer_question") in pairs
     assert (
         "python_function:rag_app.retrieve_documents",
         "python_function:rag_app.answer_question",

@@ -193,6 +193,37 @@ def test_html_defaults_to_dark_mode_with_theme_toggle() -> None:
     assert "tooltip" in html
 
 
+def test_html_sidebar_can_hide_and_expand() -> None:
+    """The inspector panel is collapsible so the canvas can use the full window."""
+    html = render_html(_graph())
+    assert 'id="sidebar-hide"' in html
+    assert 'id="sidebar-show"' in html
+    assert "daygent-sidebar" in html
+    assert "sidebar-collapsed" in html
+    assert "applySidebar" in html
+    assert 'aria-label="Hide sidebar"' in html
+    assert 'aria-label="Show sidebar"' in html
+    assert 'id="sidebar-split"' in html
+    assert "daygent-sidebar-width" in html
+    assert "bindSidebarSplit" in html
+    assert 'aria-label="Resize sidebar"' in html
+    # Invalid --sidebar-width must not collapse the 2-column layout.
+    assert "grid-template-columns: 400px 1fr" in html
+
+
+def test_html_type_filter_allows_multiple_types() -> None:
+    """Type filter is a compact multi-select dropdown, not a wrapping chip group."""
+    html = render_html(_graph())
+    assert 'id="type-filter"' in html
+    assert 'class="type-multiselect"' in html
+    assert 'id="type-filter-menu"' in html
+    assert 'aria-multiselectable="true"' in html
+    assert "var typeFilters = [];" in html
+    assert "bindTypeFilter" in html
+    assert "<select id=\"type-filter\"" not in html
+    assert "position: absolute" in html
+
+
 def test_html_defaults_to_asset_lineage_with_details_toggle() -> None:
     html = render_html(_graph())
     assert 'id="show-details"' in html
@@ -396,6 +427,7 @@ def test_existing_interactions_remain_in_viewer() -> None:
     for marker in (
         'id="search"',
         'id="type-filter"',
+        "typeFilters",
         'id="show-details"',
         'id="filter-mode"',
         'id="btn-focus"',

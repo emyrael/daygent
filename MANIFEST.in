@@ -11,13 +11,16 @@ global-exclude *.py[cod]
 global-exclude __pycache__
 global-exclude .DS_Store
 global-exclude *.egg-info
+# Scan output lands in a .daygent/ beside whatever was scanned, so exclude it
+# by pattern rather than naming each fixture; a new fixture must not leak.
+global-exclude .daygent/*
+recursive-exclude . .daygent
 prune docs
 prune graphify-out
 prune .daygent
 prune src/daygent.egg-info
-prune tests/fixtures/golden_mixed_stack/.daygent
-prune tests/fixtures/mini_dbt/.daygent
 prune .cursor
+prune .scratch
 prune .venv
 prune venv
 prune dist

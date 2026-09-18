@@ -12,17 +12,23 @@ import yaml
 from daygent.models import Confidence, Edge, EdgeType, Node, NodeType
 from daygent.models.ids import make_dbt_model_id, make_dbt_source_id, posix_relpath
 from daygent.parsers.base import BaseParser, ParseContext, ParseResult
-from daygent.parsers.evidence import evidence_metadata, first_line_matching
+from daygent.parsers.evidence import evidence_metadata
 from daygent.parsers.sql_parser import looks_like_jinja_sql
 
+_QUOTED = r"""['"]([^'"]+)['"]"""
+# Jinja tolerates whitespace and newlines anywhere around the macro name, its
+# parentheses, and its arguments, so every gap here has to be `\s*` rather than
+# assuming the canonical `ref("x")` spelling. `-?` covers `{{- ref(...) -}}`
+# whitespace control, and the trailing `,?` covers a dangling comma.
 _REF_RE = re.compile(
-    r"\{\{\s*ref\(\s*(?:['\"][^'\"]+['\"]\s*,\s*)?['\"]([^'\"]+)['\"]\s*\)",
+    rf"\{{\{{-?\s*ref\s*\(\s*(?:{_QUOTED}\s*,\s*)?{_QUOTED}\s*,?\s*\)",
     re.IGNORECASE,
 )
 _SOURCE_RE = re.compile(
-    r"\{\{\s*source\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)",
+    rf"\{{\{{-?\s*source\s*\(\s*{_QUOTED}\s*,\s*{_QUOTED}\s*,?\s*\)",
     re.IGNORECASE,
 )
+_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
 _SKIP_YAML_NAMES = frozenset(
     {
         "daygent.yml",
@@ -57,25 +63,74 @@ def jinja_is_unbalanced(source: str) -> bool:
     return source.count("{{") != source.count("}}") or source.count("{%") != source.count("%}")
 
 
+def mask_jinja_comments(source: str) -> str:
+    """Blank out `{# ... #}` while preserving offsets so line numbers stay valid."""
+
+    def blank(match: re.Match[str]) -> str:
+        return "".join("\n" if char == "\n" else " " for char in match.group(0))
+
+    return _JINJA_COMMENT_RE.sub(blank, source)
+
+
+def _line_at(source: str, offset: int) -> int:
+    """Return the 1-based line containing `offset`."""
+    return source.count("\n", 0, offset) + 1
+
+
+def find_refs(source: str) -> list[tuple[str, int]]:
+    """Return (model_name, line) per ref(), taking the last argument as the model."""
+    masked = mask_jinja_comments(source)
+    return [
+        (match.group(2), _line_at(masked, match.start()))
+        for match in _REF_RE.finditer(masked)
+    ]
+
+
+def find_sources(source: str) -> list[tuple[str, str, int]]:
+    """Return (source_name, table, line) per source() call."""
+    masked = mask_jinja_comments(source)
+    return [
+        (match.group(1), match.group(2), _line_at(masked, match.start()))
+        for match in _SOURCE_RE.finditer(masked)
+    ]
+
+
 def extract_refs(source: str) -> list[str]:
     """Return model names passed to ref(), last argument when a package is given."""
-    return [match.group(1) for match in _REF_RE.finditer(source)]
+    return [name for name, _ in find_refs(source)]
 
 
 def extract_sources(source: str) -> list[tuple[str, str]]:
     """Return (source_name, table) pairs from source() calls."""
-    return [(match.group(1), match.group(2)) for match in _SOURCE_RE.finditer(source)]
+    return [(name, table) for name, table, _ in find_sources(source)]
 
 
-def _model_node(name: str, file_path: str | None = None) -> Node:
-    """Create a dbt_model node."""
+def _model_node(
+    name: str, file_path: str | None = None, relation: dict[str, str] | None = None
+) -> Node:
+    """Create a dbt_model node, carrying manifest relation fields when known."""
     return Node(
         id=make_dbt_model_id(name),
         name=name,
         type=NodeType.DBT_MODEL,
         file_path=file_path,
-        metadata={"dbt": True},
+        metadata={"dbt": True, **(relation or {})},
     )
+
+
+# Physical-location fields dbt writes into manifest.json. They are the only
+# trustworthy way to know a model's qualified relation without running dbt.
+_RELATION_KEYS: tuple[str, ...] = ("relation_name", "database", "schema", "alias")
+
+
+def manifest_relation(payload: dict[str, Any]) -> dict[str, str]:
+    """Extract the physical relation fields dbt recorded for a model."""
+    relation: dict[str, str] = {}
+    for key in _RELATION_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            relation[key] = value.strip()
+    return relation
 
 
 def _source_node(source: str, table: str, file_path: str | None = None) -> Node:
@@ -158,7 +213,11 @@ def parse_manifest(data: dict[str, Any]) -> tuple[list[Node], list[Edge]]:
         name = str(payload.get("name") or "").strip()
         if not name:
             continue
-        current = _model_node(name, str(payload.get("original_file_path") or "") or None)
+        current = _model_node(
+            name,
+            str(payload.get("original_file_path") or "") or None,
+            manifest_relation(payload),
+        )
         add_node(current)
         depends = payload.get("depends_on") or {}
         for dep in depends.get("nodes") or []:
@@ -226,12 +285,9 @@ class DbtParser(BaseParser):
         edges: list[Edge] = []
         seen: set[tuple[str, str, str]] = set()
 
-        for ref_name in extract_refs(source):
+        for ref_name, line in find_refs(source):
             upstream = _model_node(ref_name)
             nodes[upstream.id] = upstream
-            line = first_line_matching(
-                source, [f"ref('{ref_name}')", f'ref("{ref_name}")']
-            )
             edge = _lineage_edge(
                 upstream.id,
                 current.id,
@@ -245,16 +301,9 @@ class DbtParser(BaseParser):
                 seen.add(edge.key)
                 edges.append(edge)
 
-        for source_name, table in extract_sources(source):
+        for source_name, table, line in find_sources(source):
             upstream = _source_node(source_name, table)
             nodes[upstream.id] = upstream
-            line = first_line_matching(
-                source,
-                [
-                    f"source('{source_name}', '{table}')",
-                    f'source("{source_name}", "{table}")',
-                ],
-            )
             edge = _lineage_edge(
                 upstream.id,
                 current.id,

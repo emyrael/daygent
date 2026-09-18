@@ -59,16 +59,29 @@ def _table_schema(class_node: ast.ClassDef) -> str | None:
     return None
 
 
+# `Model` is an ambiguous base name: SQLAlchemy declarative bases and Django's
+# models.Model both end in it. Django classes are already claimed by the Django
+# parser, and double-claiming them produces a duplicate orphan asset.
+_DJANGO_MODEL_BASES = frozenset(
+    {"models.Model", "db.models.Model", "django.db.models.Model"}
+)
+_DECLARATIVE_BASES = frozenset({"Base", "DeclarativeBase", "Model"})
+
+
 def _looks_like_declarative(class_node: ast.ClassDef) -> bool:
     """Return True when the class looks like a SQLAlchemy declarative model."""
+    # Django never uses __tablename__, so this alone is decisive.
     if _tablename(class_node) is not None:
         return True
-    if class_node.name in {"Base", "DeclarativeBase", "Model"}:
+    if class_node.name in _DECLARATIVE_BASES:
         return False
     for base in class_node.bases:
         chain = attr_chain(base)
-        if chain and chain[-1] in {"Base", "DeclarativeBase", "Model"}:
-            return True
+        if not chain or chain[-1] not in _DECLARATIVE_BASES:
+            continue
+        if ".".join(chain) in _DJANGO_MODEL_BASES:
+            continue
+        return True
     return False
 
 

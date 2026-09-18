@@ -30,6 +30,10 @@ KIND_VECTOR = "vector_store"
 VECTOR_CLASS_METHODS = frozenset(
     {"from_documents", "from_texts", "load_local", "from_existing_index"}
 )
+# Only these class methods push documents into a collection, making the calling
+# function the producer. Everything else (including a bare constructor) attaches
+# to a collection that already exists, so the collection is an input.
+VECTOR_WRITE_METHODS = frozenset({"from_documents", "from_texts"})
 
 
 @dataclass(frozen=True)
@@ -182,18 +186,18 @@ CONSTRUCTORS_BY_NAME: dict[str, AiConstructorSpec] = {
 }
 
 
-def _resolve_spec(func: ast.expr) -> AiConstructorSpec | None:
-    """Match a Call target to a constructor table row."""
+def _resolve_spec(func: ast.expr) -> tuple[AiConstructorSpec | None, str | None]:
+    """Match a Call target to a constructor row plus the class method used, if any."""
     name = call_function_name(func)
     if name and name in CONSTRUCTORS_BY_NAME:
-        return CONSTRUCTORS_BY_NAME[name]
+        return CONSTRUCTORS_BY_NAME[name], None
     if (
         isinstance(func, ast.Attribute)
         and func.attr in VECTOR_CLASS_METHODS
         and isinstance(func.value, ast.Name)
     ):
-        return CONSTRUCTORS_BY_NAME.get(func.value.id)
-    return None
+        return CONSTRUCTORS_BY_NAME.get(func.value.id), func.attr
+    return None, None
 
 
 def _static_string(
@@ -269,9 +273,9 @@ class ConstructorDetector:
         self._visit_function(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        spec = _resolve_spec(node.func)
+        spec, method = _resolve_spec(node.func)
         if spec is not None:
-            self._emit(spec, node)
+            self._emit(spec, node, method)
         self.generic_visit(node)
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -299,12 +303,11 @@ class ConstructorDetector:
         self._edge_keys.add(edge.key)
         self.edges.append(edge)
 
-    def _link_function(
-        self, target_id: str, edge_type: EdgeType, evidence: str, line: int | None = None
-    ) -> None:
+    def _ensure_function(self) -> str | None:
+        """Register the enclosing function node and return its id, if any."""
         func_id = self._current_function_id()
         if func_id is None:
-            return
+            return None
         qualified = ".".join([*self.class_stack, *self.func_stack])
         self._add_node(
             Node(
@@ -315,10 +318,30 @@ class ConstructorDetector:
                 metadata={"qualified_name": qualified},
             )
         )
+        return func_id
+
+    def _link(
+        self,
+        other_id: str,
+        edge_type: EdgeType,
+        evidence: str,
+        line: int | None,
+        *,
+        produced: bool,
+    ) -> None:
+        """Connect the enclosing function to `other_id` in the locked direction.
+
+        A model or store the function merely uses is an input, so it points at
+        the function. An artifact the function writes points away from it.
+        """
+        func_id = self._ensure_function()
+        if func_id is None:
+            return
+        source, target = (func_id, other_id) if produced else (other_id, func_id)
         self._add_edge(
             Edge(
-                source=func_id,
-                target=target_id,
+                source=source,
+                target=target,
                 type=edge_type,
                 confidence=Confidence.MEDIUM,
                 evidence=evidence,
@@ -329,14 +352,14 @@ class ConstructorDetector:
             )
         )
 
-    def _emit(self, spec: AiConstructorSpec, call: ast.Call) -> None:
+    def _emit(self, spec: AiConstructorSpec, call: ast.Call, method: str | None) -> None:
         line = getattr(call, "lineno", None)
         if spec.kind == KIND_LLM:
             self._emit_llm(spec, call, line)
         elif spec.kind == KIND_EMBEDDING:
             self._emit_embedding(spec, call, line)
         else:
-            self._emit_vector(spec, call, line)
+            self._emit_vector(spec, call, line, method)
 
     def _emit_llm(self, spec: AiConstructorSpec, call: ast.Call, line: int | None) -> None:
         model, expr = _static_string(call, spec.model_keys, spec.model_positional)
@@ -362,7 +385,7 @@ class ConstructorDetector:
                 metadata=metadata,
             )
         )
-        self._link_function(node_id, EdgeType.INVOKES, "llm_constructor", line)
+        self._link(node_id, EdgeType.INVOKED_BY, "llm_constructor", line, produced=False)
 
     def _emit_embedding(
         self, spec: AiConstructorSpec, call: ast.Call, line: int | None
@@ -389,10 +412,10 @@ class ConstructorDetector:
                 metadata=metadata,
             )
         )
-        self._link_function(node_id, EdgeType.EMBEDS_WITH, "embedding_constructor", line)
+        self._link(node_id, EdgeType.EMBEDS_WITH, "embedding_constructor", line, produced=False)
 
     def _emit_vector(
-        self, spec: AiConstructorSpec, call: ast.Call, line: int | None
+        self, spec: AiConstructorSpec, call: ast.Call, line: int | None, method: str | None
     ) -> None:
         store_id = make_vector_store_id(spec.provider)
         store_meta: dict[str, object] = {
@@ -413,9 +436,17 @@ class ConstructorDetector:
                 metadata=store_meta,
             )
         )
-        self._link_function(store_id, EdgeType.RETRIEVES_FROM, "vector_store_constructor", line)
+        # The store itself is infrastructure the function depends on either way.
+        self._link(
+            store_id,
+            EdgeType.RETRIEVES_FROM,
+            "vector_store_constructor",
+            line,
+            produced=False,
+        )
         if collection is None:
             return
+        writes = method in VECTOR_WRITE_METHODS
         collection_id = make_vector_collection_id(collection)
         self._add_node(
             Node(
@@ -440,4 +471,11 @@ class ConstructorDetector:
                     reference=collection,
                 ),
             )
+        )
+        self._link(
+            collection_id,
+            EdgeType.FEEDS if writes else EdgeType.RETRIEVES_FROM,
+            "vector_collection_write" if writes else "vector_collection_read",
+            line,
+            produced=writes,
         )

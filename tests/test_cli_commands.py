@@ -182,7 +182,15 @@ def test_scan_interrupt_does_not_write_graph(
     assert not (tmp_path / ".daygent" / "graph.json").exists()
 
 
-def test_graph_human_output(tmp_path: Path) -> None:
+def test_graph_positional_path_matches_scan_target(tmp_path: Path) -> None:
+    """`daygent graph PATH` must open PATH/.daygent, not the current directory."""
+    nested = tmp_path / "example"
+    nested.mkdir()
+    _save_chain(nested)
+    result = runner.invoke(app, ["graph", str(nested)])
+    assert result.exit_code == 0, _output(result)
+    assert "raw_users" in result.stdout
+    assert "POST /recommend" in result.stdout
     _save_chain(tmp_path)
     result = runner.invoke(app, ["graph", "--root", str(tmp_path)])
     assert result.exit_code == 0, _output(result)

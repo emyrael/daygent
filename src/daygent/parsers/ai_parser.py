@@ -53,23 +53,85 @@ class LangGraphDetector:
     edges: list[Edge] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     _edge_keys: set[tuple[str, ...]] = field(default_factory=set)
+    class_stack: list[str] = field(default_factory=list)
+    func_stack: list[str] = field(default_factory=list)
 
     def detect(self, tree: ast.AST) -> ParseResult:
         """Walk the tree and emit LangGraph nodes and edges."""
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                attr = node.func.attr
-                if attr == "add_node":
-                    self._add_node(node)
-                elif attr == "add_edge":
-                    self._add_edge(node)
-                elif attr == "add_conditional_edges":
-                    self._add_conditional_edges(node)
+        self._walk(tree)
         return ParseResult(
             nodes=list(self.nodes.values()),
             edges=self.edges,
             warnings=self.warnings,
         )
+
+    def _walk(self, node: ast.AST) -> None:
+        """Recurse while tracking the enclosing class/function scope."""
+        if isinstance(node, ast.ClassDef):
+            self.class_stack.append(node.name)
+            self._walk_children(node)
+            self.class_stack.pop()
+            return
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            self.func_stack.append(node.name)
+            self._walk_children(node)
+            self.func_stack.pop()
+            return
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            attr = node.func.attr
+            if attr == "add_node":
+                self._add_node(node)
+            elif attr == "add_edge":
+                self._add_edge(node)
+            elif attr == "add_conditional_edges":
+                self._add_conditional_edges(node)
+        self._walk_children(node)
+
+    def _walk_children(self, node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            self._walk(child)
+
+    def _builder_function_id(self) -> str | None:
+        """Id of the function assembling the graph, when inside one."""
+        if not self.func_stack:
+            return None
+        qualified = ".".join([*self.class_stack, *self.func_stack])
+        return make_python_function_id(self.module, qualified)
+
+    def _link_builder(self, graph_node_id: str, line: int | None) -> None:
+        """Graph node → the function that assembles it into a graph.
+
+        The builder consumes the nodes it wires together, so impact from a
+        handler reaches whatever invokes the compiled graph.
+        """
+        func_id = self._builder_function_id()
+        if func_id is None:
+            return
+        qualified = ".".join([*self.class_stack, *self.func_stack])
+        existing = self.nodes.get(func_id)
+        builder = Node(
+            id=func_id,
+            name=self.func_stack[-1],
+            type=NodeType.PYTHON_FUNCTION,
+            file_path=self.file_path,
+            metadata={"qualified_name": qualified},
+        )
+        self.nodes[func_id] = existing.merge(builder) if existing else builder
+        edge = Edge(
+            source=graph_node_id,
+            target=func_id,
+            type=EdgeType.INVOKED_BY,
+            confidence=Confidence.MEDIUM,
+            evidence="langgraph_builder",
+            metadata=evidence_metadata(
+                file_path=self.file_path,
+                line_number=line if isinstance(line, int) else None,
+            ),
+        )
+        if edge.key in self._edge_keys:
+            return
+        self._edge_keys.add(edge.key)
+        self.edges.append(edge)
 
     def _ensure(self, name: str, line: int | None, **meta: object) -> Node:
         node = _langgraph_node(name, self.file_path, line, **meta)
@@ -101,6 +163,7 @@ class LangGraphDetector:
             return
         line = getattr(call, "lineno", None)
         graph_node = self._ensure(name, line)
+        self._link_builder(graph_node.id, line)
         action = None
         if len(call.args) >= 2 and isinstance(call.args[1], ast.Name):
             action = call.args[1].id

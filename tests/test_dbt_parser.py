@@ -7,8 +7,10 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from daygent.parsers import default_registry
-from daygent.parsers.dbt_parser import extract_refs, extract_sources
+from daygent.parsers.dbt_parser import extract_refs, extract_sources, find_refs, find_sources
 from daygent.parsers.evidence import evidence_metadata, first_line_matching
 from daygent.scanner import Scanner
 
@@ -20,6 +22,125 @@ def test_extract_ref_and_source_helpers() -> None:
     sql = "select * from {{ ref('stg_users') }} join {{ source('raw', 'users') }}"
     assert extract_refs(sql) == ["stg_users"]
     assert extract_sources(sql) == [("raw", "users")]
+
+
+@pytest.mark.parametrize(
+    "macro",
+    [
+        '{{ ref("orders") }}',
+        '{{ref("orders")}}',
+        '{{ ref ("orders") }}',
+        '{{ref ("orders")}}',
+        '{{ ref( "orders" ) }}',
+        '{{ ref ( "orders" ) }}',
+        '{{ ref (\n    "orders"\n) }}',
+        '{{ ref(\n    "orders"\n) }}',
+        "{{ ref('orders') }}",
+        "{{ref ('orders')}}",
+        '{{- ref("orders") -}}',
+        '{{ ref("orders",) }}',
+        '{{ REF("orders") }}',
+    ],
+)
+def test_ref_whitespace_matrix(macro: str) -> None:
+    """Jinja allows arbitrary whitespace; extraction must not assume a spelling."""
+    assert extract_refs(f"select * from {macro}") == ["orders"]
+
+
+@pytest.mark.parametrize(
+    "macro",
+    [
+        '{{ ref("package_name", "orders") }}',
+        '{{ref("package_name","orders")}}',
+        '{{ ref ("package_name", "orders") }}',
+        '{{ ref(\n    "package_name",\n    "orders"\n) }}',
+    ],
+)
+def test_package_qualified_ref_uses_final_argument(macro: str) -> None:
+    assert extract_refs(f"select * from {macro}") == ["orders"]
+
+
+@pytest.mark.parametrize(
+    "macro",
+    [
+        '{{ source("raw", "orders") }}',
+        '{{source("raw", "orders")}}',
+        '{{source("raw","orders")}}',
+        '{{ source ("raw", "orders") }}',
+        '{{ source( "raw", "orders" ) }}',
+        '{{ source (\n    "raw",\n    "orders"\n) }}',
+        '{{ source(\n    "raw",\n    "orders"\n) }}',
+        "{{ source('raw', 'orders') }}",
+        '{{- source("raw", "orders") -}}',
+        '{{ source("raw", "orders",) }}',
+    ],
+)
+def test_source_whitespace_matrix(macro: str) -> None:
+    assert extract_sources(f"select * from {macro}") == [("raw", "orders")]
+
+
+def test_multiple_refs_in_one_file_with_ctes() -> None:
+    sql = """
+with request as (
+    select * from {{ref ("raw_data_request")}}
+),
+packages as (
+    select * from {{ ref("raw_data_credit_packages") }}
+),
+notes as (
+    select * from {{ source ("app", "customer_notes") }}
+)
+select * from request join packages using (id_organization)
+"""
+    assert extract_refs(sql) == ["raw_data_request", "raw_data_credit_packages"]
+    assert extract_sources(sql) == [("app", "customer_notes")]
+
+
+def test_evidence_line_comes_from_matched_macro_position() -> None:
+    """Line numbers must follow the real match, not a canonical rendering."""
+    sql = (
+        'select 1\n\nfrom {{ref ("raw_data_request")}}\n'
+        'join {{ ref (\n    "raw_data_credit_packages"\n) }}\n'
+    )
+    assert find_refs(sql) == [("raw_data_request", 3), ("raw_data_credit_packages", 4)]
+    source_sql = 'select 1\nfrom {{source ("app", "requests")}}\n'
+    assert find_sources(source_sql) == [("app", "requests", 2)]
+
+
+def test_jinja_comments_are_not_refs() -> None:
+    sql = '{# {{ ref("commented_out") }} #}\nselect * from {{ ref("real_model") }}'
+    assert extract_refs(sql) == ["real_model"]
+    assert find_refs(sql) == [("real_model", 2)]
+    multiline = '{#\n{{ ref("a") }}\n{{ source("s", "t") }}\n#}\nselect * from {{ ref("b") }}\n'
+    assert extract_refs(multiline) == ["b"]
+    assert extract_sources(multiline) == []
+    # Masking preserves offsets, so the surviving ref keeps its true line.
+    assert find_refs(multiline) == [("b", 5)]
+
+
+def test_real_world_subscription_ref_pattern_regression(tmp_path: Path) -> None:
+    """Permanent guard for the exact pattern that failed in the wild."""
+    (tmp_path / "dbt_project.yml").write_text("name: subs\n", encoding="utf-8")
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "raw_data_request.sql").write_text("select 1 as id_organization\n", encoding="utf-8")
+    (models / "raw_data_credit_packages.sql").write_text(
+        "select 1 as id_organization\n", encoding="utf-8"
+    )
+    (models / "subscription_info.sql").write_text(
+        "with r as (\n"
+        '    select * from {{ref ("raw_data_request")}}\n'
+        "),\n"
+        "p as (\n"
+        '    select * from {{ref ("raw_data_credit_packages")}}\n'
+        ")\n"
+        "select * from r join p using (id_organization)\n",
+        encoding="utf-8",
+    )
+    report = Scanner(default_registry()).scan(tmp_path)
+    pairs = {(edge.source, edge.target) for edge in report.graph.edges}
+    assert ("dbt_model:raw_data_request", "dbt_model:subscription_info") in pairs
+    assert ("dbt_model:raw_data_credit_packages", "dbt_model:subscription_info") in pairs
 
 
 def test_mini_dbt_fixture_refs_and_sources() -> None:

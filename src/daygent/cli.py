@@ -168,6 +168,15 @@ def scan(
 
 @app.command("graph")
 def graph_cmd(
+    path: Path = typer.Argument(
+        Path("."),
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        metavar="PATH",
+        help="Directory that contains .daygent/graph.json. Same PATH you passed to scan.",
+    ),
     json_output: bool = typer.Option(
         False, "--json", help="Print the complete graph artifact as JSON."
     ),
@@ -192,14 +201,14 @@ def graph_cmd(
         "--open",
         help="Open the generated HTML in your default browser. Requires --html.",
     ),
-    root: Path = typer.Option(
-        Path("."),
+    root: Path | None = typer.Option(
+        None,
         "--root",
         exists=True,
         file_okay=False,
         dir_okay=True,
         readable=True,
-        help="Directory that contains .daygent/graph.json. Defaults to the current directory.",
+        help="Alias for PATH. Prefer `daygent graph PATH`.",
     ),
     config: Path | None = typer.Option(
         None,
@@ -226,12 +235,12 @@ def graph_cmd(
     Examples:
 
       daygent graph
+      daygent graph PATH --html --open
       daygent graph --json
       daygent graph --mermaid
       daygent graph --html
       daygent graph --html --open
       daygent graph --html --include-source
-      daygent graph --root ./my-project
     """
     formats = [json_output, mermaid, html]
     if sum(1 for flag in formats if flag) > 1:
@@ -243,8 +252,9 @@ def graph_cmd(
     if include_source and not html:
         err_console.print("[red]--include-source requires --html.[/red]")
         raise typer.Exit(code=1)
+    target = root if root is not None else path
     try:
-        graph = _load_saved_graph(root, config)
+        graph = _load_saved_graph(target, config)
     except DaygentConfigError as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
@@ -255,14 +265,14 @@ def graph_cmd(
         typer.echo(render_mermaid(graph), nl=False)
         return
     if html:
-        json_path = _graph_path(root, config)
+        json_path = _graph_path(target, config)
         html_path = html_path_for_graph(json_path)
         try:
             written = write_html(
                 graph,
                 html_path,
                 include_source=include_source,
-                source_root=root,
+                source_root=target,
             )
         except OSError as exc:
             err_console.print(f"[red]Unable to write HTML graph: {exc}[/red]")
@@ -378,6 +388,23 @@ def _print_scan_summary(graph: Graph, output: Path) -> None:
     console.print()
     typer.echo(str(output))
     console.print()
+    view_root = _scan_view_root(output)
+    if view_root is not None:
+        console.print("View this graph:")
+        console.print(f"  daygent graph {view_root} --html --open")
+        console.print()
+
+
+def _scan_view_root(output: Path) -> str | None:
+    """Return a CLI path for `daygent graph PATH` when scan wrote outside cwd."""
+    try:
+        graph_dir = output.resolve().parent
+        cwd = Path.cwd().resolve()
+        if graph_dir.parent == cwd:
+            return None
+        return str(graph_dir.parent.relative_to(cwd))
+    except (OSError, ValueError):
+        return str(output.parent.parent)
 
 
 def _count_type(nodes: list[Node], node_type: NodeType) -> int:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 GRAPH_SCHEMA_VERSION = "0.1"
 

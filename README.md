@@ -168,7 +168,7 @@ Built-in skips include `.venv`, `node_modules`, `graphify-out`, `.cursor`, and `
 - opens on **asset lineage**: tables, dbt models, pipeline datasets, routes, and vector stores, with Python functions and temp views contracted into single edges
 - **Show implementation details** reveals the full detailed graph; nothing is ever deleted from it
 - connected pipelines are laid out left to right and packed into rows, so unrelated flows sit side by side instead of stacking into one tall column
-- filtering by type keeps the matching nodes **plus their lineage neighbours** (switch to `Show matches only` for the strict view)
+- filtering by one or more types keeps the matching nodes **plus their lineage neighbours** (switch to `Show matches only` for the strict view)
 - **Focus lineage** reduces the canvas to the selected node's connected flow
 - search centers the first match and keeps its context; Enter cycles matches
 - clicking a contracted edge lists the hops it hides, e.g. `via load_orders() → tmp_orders → clean_orders()`
@@ -184,9 +184,25 @@ Built-in skips include `.venv`, `node_modules`, `graphify-out`, `.cursor`, and `
 - No secret or environment resolution
 - Scan warnings do not print file bodies
 
+## Cross-stack lineage
+
+Daygent statically connects lineage across SQL, dbt, PySpark, Databricks DLT/Lakeflow, Python data access, Django/SQLAlchemy, AI/vector infrastructure, LangGraph, and FastAPI where dependencies can be resolved from source. A change to an `app.requests` dbt source can reach a FastAPI route through hops such as:
+
+```text
+app.requests → raw_data_request → subscription_info → gold_subscription_metrics
+  → v_subscription_metrics → silver.subscription_features → gold.customer_360
+  → app.subscription_snapshot → load_subscription_documents() → build_subscription_index()
+  → subscription_rag → retrieve → generate → POST /ask
+```
+
+Those hops do not require imports across data boundaries. The dbt layer does not need to import the pipeline and the pipeline does not need to import the Django app; Daygent reconciles asset identity across the repository, so the `gold_subscription_metrics` written by dbt and the one read by `spark.read.table(...)` are a single node.
+
 ## Known limitations (v0.2)
 
 - Spark temp views resolve within the declaring module only. A view created in one file and consumed in another is not linked.
+- Asset identity merges only on provable evidence: a dbt manifest relation, an exact qualified relation name, or a unique unqualified dbt model name. A schema-qualified table never collapses onto a bare model with the same basename, so genuinely ambiguous names stay separate nodes.
+- Arbitrary runtime reflection is unsupported: `getattr`, dynamic imports, monkeypatching, and dependency injection do not produce edges.
+- Full symbolic DataFrame propagation is not attempted; only deterministic same-function assignment forms are tracked.
 - Dynamic table names, f-string SQL, and runtime-constructed queries are generally omitted.
 - Loop unrolling covers literal `dict`/`list`/`tuple` constants with `.items()`, `.keys()`, `.values()`, or direct iteration, up to 64 entries. Anything computed at runtime is skipped.
 - DataFrame dataflow is same-function and assignment-level: `df = spark.read.table(...)`, `df = df.transform(...)`, `df.write...`, `df.createOrReplaceTempView(...)`. There is no symbolic execution.

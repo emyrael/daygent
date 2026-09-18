@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "daygent"
-version = "0.2.1"
+version = "0.2.2"
 description = "Static lineage and impact analysis for modern data + AI repositories."
 readme = "README.md"
 license = "MIT"

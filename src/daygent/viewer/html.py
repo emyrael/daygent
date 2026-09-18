@@ -38,7 +38,10 @@ __DAYGENT_CSS__
       <div>
         <h1>Daygent</h1>
       </div>
-      <button type="button" id="theme-toggle" aria-label="Toggle color theme">Light</button>
+      <div class="brand-actions">
+        <button type="button" id="theme-toggle" aria-label="Toggle color theme">Light</button>
+        <button type="button" id="sidebar-hide" aria-label="Hide sidebar" aria-expanded="true">Hide</button>
+      </div>
     </header>
     __DAYGENT_BANNER__
     <p class="convention" id="direction-legend">A → B means B depends on A</p>
@@ -56,10 +59,15 @@ __DAYGENT_CSS__
         <input id="search" type="search" placeholder="Name or id" autocomplete="off">
       </label>
       <p class="hint">Enter cycles matches · Shift+Enter goes back</p>
-      <label class="field">
+      <div class="field">
         Filter by type
-        <select id="type-filter"></select>
-      </label>
+        <div id="type-filter" class="type-multiselect">
+          <button type="button" id="type-filter-btn" class="type-multiselect-btn" aria-haspopup="listbox" aria-expanded="false" aria-controls="type-filter-menu">
+            <span id="type-filter-label">All types</span>
+          </button>
+          <div id="type-filter-menu" class="type-multiselect-menu" role="listbox" aria-multiselectable="true" hidden></div>
+        </div>
+      </div>
       <label class="field">
         When filtering
         <select id="filter-mode">
@@ -99,8 +107,10 @@ __DAYGENT_CSS__
         </section>
       </div>
     </section>
+    <div id="sidebar-split" class="sidebar-split" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuemin="240" aria-valuemax="720" aria-valuenow="400" tabindex="0"></div>
   </aside>
   <main>
+    <button type="button" id="sidebar-show" class="sidebar-show" aria-label="Show sidebar" hidden>Show sidebar</button>
     <svg id="canvas" role="img" aria-label="Dependency graph"></svg>
     <div id="tooltip" hidden></div>
   </main>

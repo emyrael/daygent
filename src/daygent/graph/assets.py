@@ -129,18 +129,29 @@ def _contracted_targets(
     asset_ids: set[str],
     fwd: dict[str, list[str]],
 ) -> list[tuple[str, tuple[str, ...]]]:
-    """Walk forward from `start` through implementation nodes to other assets."""
+    """Walk forward from `start` through implementation nodes to other assets.
+
+    A function that already writes or feeds an asset is a stage boundary: we
+    record those assets and stop. Continuing through a further function call
+    would skip the produced table and draw a shortcut such as a dbt mart
+    jumping straight to a vector collection because the indexer happens to
+    call the snapshot job.
+    """
     found: list[tuple[str, tuple[str, ...]]] = []
     visits: dict[str, int] = {}
     queue: list[tuple[str, tuple[str, ...]]] = [(start, ())]
     while queue:
         current, via = queue.pop(0)
-        for nxt in sorted(fwd.get(current, ())):
-            if nxt == start or nxt in via:
-                continue
-            if nxt in asset_ids:
-                found.append((nxt, via))
-                continue
+        neighbors = [
+            nxt for nxt in fwd.get(current, ()) if nxt != start and nxt not in via
+        ]
+        asset_next = [nxt for nxt in neighbors if nxt in asset_ids]
+        impl_next = [nxt for nxt in neighbors if nxt not in asset_ids]
+        for nxt in asset_next:
+            found.append((nxt, via))
+        if current != start and asset_next:
+            continue
+        for nxt in impl_next:
             if len(via) >= MAX_VIA_HOPS:
                 continue
             seen = visits.get(nxt, 0)
