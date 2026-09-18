@@ -41,8 +41,33 @@ def test_license_is_mit() -> None:
     assert license_text.startswith("MIT License")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'license = "MIT"' in pyproject
+    assert 'readme = "README.md"' in pyproject
+    assert "https://github.com/emyrael/daygent" in pyproject
+    assert "Emmanuel Onwubuya" in pyproject
+    assert '"daygent.viewer" = ["static/*"]' in pyproject
+
+
+def test_viewer_static_assets_ship_with_package() -> None:
+    from importlib.resources import files
+
+    static = files("daygent.viewer") / "static"
+    assert (static / "viewer.css").is_file()
+    assert (static / "viewer.js").is_file()
+
+
+def test_readme_installs_from_pypi() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "pip install daygent" in readme
+    assert "uv tool install daygent" in readme
+    assert "uvx daygent --help" in readme
+    assert "provisional" not in readme.lower()
+    assert "PyPI publishing is not part of this release" not in readme
+    assert "issue #22" not in readme.lower()
 
 
 def test_gitignore_excludes_daygent_artifact() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert ".daygent/" in gitignore.splitlines()
+    lines = gitignore.splitlines()
+    assert ".daygent/" in lines
+    assert "docs/" in lines
+    assert "graphify-out/" in lines

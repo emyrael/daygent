@@ -67,9 +67,35 @@ Static detection only:
 
 No live vendor, database, or network calls. Dynamic model names (`os.getenv("MODEL")`) are marked dynamic and are **not** resolved.
 
-## Install (from source)
+## Install
 
-PyPI publishing is not part of this release. Install from GitHub:
+Requires Python 3.11+.
+
+```bash
+pip install daygent
+```
+
+With uv:
+
+```bash
+uv tool install daygent
+```
+
+One-off:
+
+```bash
+uvx daygent --help
+```
+
+## Quick Start
+
+```bash
+daygent scan .
+daygent graph --html --open
+daygent impact <node>
+```
+
+From a clone (contributors):
 
 ```bash
 git clone https://github.com/emyrael/daygent.git
@@ -77,10 +103,7 @@ cd daygent
 python3.11 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-daygent --help
 ```
-
-Requires Python 3.11+.
 
 ## Commands
 
@@ -151,12 +174,10 @@ The golden fixture at `tests/fixtures/golden_mixed_stack/` locks this behavior.
 ## Roadmap
 
 - Real-repository testing beyond fixtures
-- License confirmation before the first public package tag ([issue #2](https://github.com/emyrael/daygent/issues/2))
-- PyPI publishing ([issue #22](https://github.com/emyrael/daygent/issues/22))
 
 ## License
 
-MIT (provisional for GitHub-first development). Confirm in issue #2 before tagging a public package.
+MIT. See [LICENSE](LICENSE).
 
 ## Contribute
 

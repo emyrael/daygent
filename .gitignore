@@ -15,4 +15,7 @@ build/
 htmlcov/
 .DS_Store
 .idea/
+docs/
+graphify-out/
 .vscode/
+

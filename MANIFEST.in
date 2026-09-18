@@ -1,0 +1,25 @@
+# Public source distribution only. Private docs/, Graphify output, and
+# local scan artifacts must never enter the sdist.
+include LICENSE
+include README.md
+include CONTRIBUTING.md
+include pyproject.toml
+graft src/daygent
+graft tests
+graft .github
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude *.egg-info
+prune docs
+prune graphify-out
+prune .daygent
+prune src/daygent.egg-info
+prune tests/fixtures/golden_mixed_stack/.daygent
+prune tests/fixtures/mini_dbt/.daygent
+prune .cursor
+prune .venv
+prune venv
+prune dist
+prune build
+prune .pytest_cache

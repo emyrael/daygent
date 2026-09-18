@@ -16,7 +16,7 @@ pytest
 daygent --help
 ```
 
-Do not publish to PyPI from this workflow. That is a separate release issue.
+Releases are published from a GitHub Release using PyPI Trusted Publishing. Do not put PyPI tokens in the repo or in this clone workflow.
 
 ## Tests
 
@@ -96,6 +96,18 @@ Same-file Python calls are in scope. **Cross-file Python call resolution is a kn
 - Library APIs (`Scanner`, `impact`, `get_descendants`, `render_html`) are the source of truth.
 - `cli.py` formats stdout and writes artifacts. Keep business rules out of Typer callbacks when they already live in a library module.
 
+## Releasing
+
+Maintainers ship from GitHub, not from a local `twine upload` with a long-lived token.
+
+```bash
+pip install -e ".[release]"
+python -m build
+python -m twine check dist/*
+```
+
+Before the first upload, configure a pending Trusted Publisher on PyPI and a GitHub Environment named `pypi`. Publishing runs in `.github/workflows/release.yml` only when a version tag matching `v*` is pushed (for example `v0.1.0`). Pushing to `main` does not publish. The publish job uses OIDC (`id-token: write`); do not store a PyPI token in the repository.
+
 ## License
 
-MIT is the working GitHub-first license. Do not treat a PyPI release as done until the license issue is confirmed and publishing is explicitly requested.
+MIT. See [LICENSE](LICENSE).

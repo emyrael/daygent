@@ -29,6 +29,20 @@ from daygent.viewer import html_path_for_graph, write_html
 
 SCAN_HINT = "Run `daygent scan .` first."
 
+_APP_HELP = (
+    "Daygent statically scans data + AI repositories and builds a local "
+    "dependency graph for lineage and impact analysis."
+)
+_APP_EPILOG = (
+    "Quick start:\n"
+    "  daygent scan .\n"
+    "  daygent graph\n"
+    "  daygent graph --html --open\n"
+    "  daygent impact <node>\n"
+    "\n"
+    "Run `daygent <command> --help` for command-specific options."
+)
+
 
 def _version_callback(value: bool) -> None:
     """Print the package version and exit."""
@@ -39,14 +53,16 @@ def _version_callback(value: bool) -> None:
 
 app = typer.Typer(
     name="daygent",
-    help="Static lineage and impact analysis for modern data + AI repositories.",
+    help=_APP_HELP,
+    epilog=_APP_EPILOG,
     no_args_is_help=True,
+    rich_markup_mode="rich",
 )
 console = Console()
 err_console = Console(stderr=True)
 
 
-@app.callback()
+@app.callback(help=_APP_HELP)
 def _root(
     version: bool = typer.Option(
         False,
@@ -56,7 +72,7 @@ def _root(
         help="Show the Daygent version and exit.",
     ),
 ) -> None:
-    """Static lineage and impact analysis for modern data + AI repositories."""
+    """Handle global CLI options."""
     _ = version
 
 
@@ -100,16 +116,33 @@ def scan(
         file_okay=False,
         dir_okay=True,
         readable=True,
-        help="Repository root to scan.",
+        metavar="PATH",
+        help="Repository directory to scan. Defaults to the current directory.",
     ),
-    verbose: bool = typer.Option(False, "--verbose", help="Show extra diagnostics."),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Print extra diagnostics for files scanned and skipped.",
+    ),
     config: Path | None = typer.Option(
         None,
         "--config",
-        help="Path to daygent.yml (defaults to <root>/daygent.yml).",
+        help="Optional daygent.yml path. Defaults to PATH/daygent.yml when present.",
     ),
 ) -> None:
-    """Scan a repository and write .daygent/graph.json."""
+    """Scan a repository and build .daygent/graph.json.
+
+    Reads source files statically. Daygent scans the tree broadly, then keeps
+    only relevant data/AI lineage in the graph. It does not execute repository
+    code and does not contact databases, APIs, LLMs, or vector stores.
+
+    Examples:
+
+      daygent scan .
+      daygent scan ./my-project
+      daygent scan . --verbose
+      daygent scan . --config daygent.yml
+    """
     configure_logging(verbose=verbose)
     scanner = Scanner(registry=_registry())
     try:
@@ -135,16 +168,29 @@ def scan(
 
 @app.command("graph")
 def graph_cmd(
-    json_output: bool = typer.Option(False, "--json", help="Print graph JSON."),
-    mermaid: bool = typer.Option(False, "--mermaid", help="Print Mermaid graph LR."),
-    html: bool = typer.Option(False, "--html", help="Write an offline HTML viewer."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print the complete graph artifact as JSON."
+    ),
+    mermaid: bool = typer.Option(
+        False, "--mermaid", help="Print a Mermaid graph LR diagram."
+    ),
+    html: bool = typer.Option(
+        False,
+        "--html",
+        help="Write an interactive local HTML viewer next to graph.json.",
+    ),
     include_source: bool = typer.Option(
         False,
         "--include-source",
-        help="Embed small source excerpts around known lines (requires --html).",
+        help=(
+            "Embed short source excerpts in the HTML viewer. "
+            "Warning: the generated HTML will contain source code. Requires --html."
+        ),
     ),
     open_browser: bool = typer.Option(
-        False, "--open", help="Open the HTML viewer (requires --html)."
+        False,
+        "--open",
+        help="Open the generated HTML in your default browser. Requires --html.",
     ),
     root: Path = typer.Option(
         Path("."),
@@ -153,15 +199,40 @@ def graph_cmd(
         file_okay=False,
         dir_okay=True,
         readable=True,
-        help="Repository root that contains the saved graph.",
+        help="Directory that contains .daygent/graph.json. Defaults to the current directory.",
     ),
     config: Path | None = typer.Option(
         None,
         "--config",
-        help="Path to daygent.yml used to locate the graph artifact.",
+        help="Optional daygent.yml used to locate the saved graph.",
     ),
 ) -> None:
-    """Display the saved dependency graph."""
+    """View/export the saved dependency graph.
+
+    Shows the graph written by `daygent scan`. The default is readable
+    dependency chains.
+
+    Convention: A → B means B depends on A.
+
+    Modes:
+
+      default            readable dependency chains
+      --json             complete graph artifact as JSON
+      --mermaid          Mermaid graph LR output
+      --html             generate interactive local HTML viewer
+      --open             open generated HTML in default browser
+      --include-source   opt-in source excerpts in HTML (embeds source)
+
+    Examples:
+
+      daygent graph
+      daygent graph --json
+      daygent graph --mermaid
+      daygent graph --html
+      daygent graph --html --open
+      daygent graph --html --include-source
+      daygent graph --root ./my-project
+    """
     formats = [json_output, mermaid, html]
     if sum(1 for flag in formats if flag) > 1:
         err_console.print("[red]Use only one of --json, --mermaid, or --html.[/red]")
@@ -206,9 +277,19 @@ def graph_cmd(
 
 @app.command()
 def impact(
-    node: str = typer.Argument(help="Node id or name to analyze."),
-    depth: int | None = typer.Option(None, "--depth", help="Maximum downstream depth."),
-    json_output: bool = typer.Option(False, "--json", help="Print JSON impact report."),
+    node: str = typer.Argument(
+        metavar="NODE",
+        help="Any saved-graph node: name or stable id (dbt, SQL, Python, LangGraph, routes).",
+    ),
+    depth: int | None = typer.Option(
+        None,
+        "--depth",
+        metavar="N",
+        help="Limit how many hops downstream to include.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print the impact report as JSON."
+    ),
     root: Path = typer.Option(
         Path("."),
         "--root",
@@ -216,15 +297,34 @@ def impact(
         file_okay=False,
         dir_okay=True,
         readable=True,
-        help="Repository root that contains the saved graph.",
+        help="Directory that contains .daygent/graph.json. Defaults to the current directory.",
     ),
     config: Path | None = typer.Option(
         None,
         "--config",
-        help="Path to daygent.yml used to locate the graph artifact.",
+        help="Optional daygent.yml used to locate the saved graph.",
     ),
 ) -> None:
-    """Show downstream blast radius."""
+    """Show downstream blast radius for a node.
+
+    Works on any node in the saved graph, not only dbt models.
+
+    Impact walks downstream with graph arrows and answers: "What could be
+    affected if this node changes?"
+
+    Prefer an exact stable id. A unique name also works. Ambiguous names print
+    candidates instead of silently selecting one.
+
+    Examples:
+
+      daygent impact stg_users
+      daygent impact warehouse.orders
+      daygent impact retrieve_documents
+      daygent impact langgraph_node:retrieve
+      daygent impact stg_users --depth 2
+      daygent impact stg_users --json
+      daygent impact stg_users --root ./my-project
+    """
     if depth is not None and depth < 1:
         err_console.print("[red]--depth must be >= 1.[/red]")
         raise typer.Exit(code=1)

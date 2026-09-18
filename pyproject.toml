@@ -10,12 +10,25 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-authors = [{ name = "Daygent contributors" }]
-keywords = ["lineage", "dbt", "sql", "fastapi", "langgraph", "static-analysis"]
+authors = [{ name = "Emmanuel Onwubuya" }]
+maintainers = [{ name = "Emmanuel Onwubuya" }]
+keywords = [
+    "lineage",
+    "impact-analysis",
+    "dbt",
+    "sql",
+    "fastapi",
+    "langgraph",
+    "llm",
+    "vector-store",
+    "static-analysis",
+    "cli",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -31,13 +44,18 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+release = ["build>=1.2", "twine>=5.0"]
 
 [project.scripts]
 daygent = "daygent.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/emyrael/daygent"
+Repository = "https://github.com/emyrael/daygent"
 Issues = "https://github.com/emyrael/daygent/issues"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
