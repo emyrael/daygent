@@ -12,7 +12,13 @@ SRC = ROOT / "src" / "daygent"
 
 
 def test_version() -> None:
-    assert __version__ == "0.2.0"
+    assert __version__ == "0.2.1"
+
+
+def test_version_is_consistent_across_metadata() -> None:
+    """pyproject and the package must never drift apart on a release."""
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'version = "{__version__}"' in pyproject
 
 
 def test_graph_convention_is_locked() -> None:
