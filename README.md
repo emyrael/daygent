@@ -11,6 +11,19 @@ Daygent reads source files on disk and builds a dependency graph you can inspect
 
 It does **not** connect to warehouses, APIs, vector databases, or cloud accounts. It does **not** execute scanned code, resolve environment variables, or phone home.
 
+## Interactive graph viewer
+
+<p align="center">
+  <img src="assets/daygent-graph.png" alt="Daygent interactive dependency graph viewer" width="100%">
+</p>
+
+Explore dependencies visually, inspect nodes and edges, filter by technology, and trace upstream/downstream impact — fully offline.
+
+```bash
+daygent scan .
+daygent graph --html --open
+```
+
 ## Why it exists
 
 Data + AI codebases mix SQL, dbt, Python services, FastAPI, LangGraph, LLM constructors, and HTTP clients. Runtime catalogs and vendor consoles only see what already ran. Daygent maps what the **source** statically declares, so you can review impact before you ship.
