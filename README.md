@@ -62,7 +62,7 @@ user_features
 
 Changing `raw.users` can affect everything below it.
 
-## v0.1 technologies
+## Supported technologies
 
 Static detection only:
 
@@ -77,8 +77,14 @@ Static detection only:
 | Embeddings | OpenAI / HuggingFace / SentenceTransformer constructors |
 | Vector stores | Qdrant, Pinecone, Weaviate, Chroma, FAISS, PGVector |
 | External HTTP | literal `https://host/...` URLs |
+| PySpark | table reads/writes (`spark.table`, `read.table`, `saveAsTable`, `writeTo`) and literal `spark.sql` |
+| Databricks DLT / Lakeflow | pipeline declarations (`@dlt.table`, `@dp.materialized_view`, `dlt.read`, …) |
+| Embedded SQL in Python | literal SQL in `execute` / `text(...)` style calls |
+| pandas | literal `read_sql` / `read_sql_query` / `read_sql_table` |
+| Django | basic ORM model lineage, `objects.raw`, explicit `Meta.db_table` |
+| SQLAlchemy | basic model/table lineage, `select`/`query`, literal `text()`, explicit `__tablename__` |
 
-No live vendor, database, or network calls. Dynamic model names (`os.getenv("MODEL")`) are marked dynamic and are **not** resolved.
+No live vendor, database, Spark session, Django setup, SQLAlchemy engine, or network calls. Dynamic names (`os.getenv("TABLE")`, f-strings, `spark.sql(query)`) are **not** resolved.
 
 ## Install
 
@@ -174,15 +180,18 @@ Built-in skips include `.venv`, `node_modules`, `graphify-out`, `.cursor`, and `
 - No secret or environment resolution
 - Scan warnings do not print file bodies
 
-## Known limitations (v0.1)
+## Known limitations (v0.2)
 
 - Cross-file Python call resolution is incomplete. Same-file calls are detected; calls across modules are not fully linked.
-- Only literal HTTP URLs and literal LLM / collection names are recorded.
+- Dynamic table names, f-string SQL, and runtime-constructed queries are generally omitted.
+- No Spark plan analysis, Databricks workspace inspection, Django setup/import, or SQLAlchemy metadata reflection.
+- Complex DataFrame variable propagation is not modeled; the containing function is the transform boundary.
+- Cross-function/cross-file dynamic dataflow may still be incomplete.
 - Isolated Python helpers and unrelated health routes are omitted by design (scoping).
 - dbt compile and warehouse introspection are out of scope.
 - Default HTML does not ship source code.
 
-The golden fixture at `tests/fixtures/golden_mixed_stack/` locks this behavior.
+The golden fixtures at `tests/fixtures/golden_mixed_stack/` and `tests/fixtures/python_data_stack/` lock this behavior.
 
 ## Roadmap
 

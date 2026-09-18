@@ -49,6 +49,9 @@ def test_code_type_is_language_agnostic() -> None:
         "vector_store",
         "vector_collection",
         "external_system",
+        "pipeline_dataset",
+        "django_model",
+        "sqlalchemy_model",
     }
     assert is_anchor_type("vector_store")
 

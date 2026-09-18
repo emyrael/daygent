@@ -95,7 +95,7 @@ def test_resolve_unique_name_and_reject_ambiguous() -> None:
     )
     assert resolve_node(graph, "sql_table:orders").name == "orders"
     assert resolve_node(graph, "orders").id == "sql_table:orders"
-    with pytest.raises(AmbiguousNodeError, match="Ambiguous node name"):
+    with pytest.raises(AmbiguousNodeError, match="Ambiguous node"):
         resolve_node(graph, "dup")
     with pytest.raises(NodeNotFoundError):
         get_descendants(graph, "missing")
@@ -104,6 +104,33 @@ def test_resolve_unique_name_and_reject_ambiguous() -> None:
 def test_resolve_unique_case_insensitive_name() -> None:
     graph = Graph(nodes=[Node(id="dbt_model:stg_users", name="stg_users", type="dbt_model")])
     assert resolve_node(graph, "STG_USERS").id == "dbt_model:stg_users"
+
+
+def test_resolve_qualified_table_and_ambiguous_short_name() -> None:
+    graph = Graph(
+        nodes=[
+            Node(
+                id="sql_table:warehouse.mirror_station_summary",
+                name="station_summary",
+                type="sql_table",
+            ),
+            Node(
+                id="sql_table:warehouse.reporting.station_summary",
+                name="station_summary",
+                type="sql_table",
+            ),
+        ]
+    )
+    resolved = resolve_node(graph, "warehouse.reporting.station_summary")
+    assert resolved.id == "sql_table:warehouse.reporting.station_summary"
+    with pytest.raises(AmbiguousNodeError) as exc_info:
+        resolve_node(graph, "station_summary")
+    text = str(exc_info.value)
+    assert "Ambiguous node 'station_summary'" in text
+    assert "Choose one:" in text
+    assert 'daygent impact "warehouse.reporting.station_summary"' in text
+    assert "sql_table:warehouse.mirror_station_summary" in text
+    assert "sql_table:warehouse.reporting.station_summary" in text
 
 
 def test_unknown_node_includes_suggestions() -> None:

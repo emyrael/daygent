@@ -411,10 +411,7 @@ def _print_ambiguous(exc: AmbiguousNodeError, json_output: bool) -> None:
             }
         )
         return
-    err_console.print(f"[red]Ambiguous node {exc.query!r}. Candidates:[/red]")
-    for node in exc.candidates:
-        location = node.file_path or ""
-        err_console.print(f"  {node.id}  ({display_name(node)}, {node.type}, {location})")
+    err_console.print(str(exc))
 
 
 def _print_unknown(exc: NodeNotFoundError, json_output: bool) -> None:

@@ -115,6 +115,30 @@ def make_vector_collection_id(name: str, vendor: str | None = None) -> str:
     return make_node_id(NodeType.VECTOR_COLLECTION, name.strip())
 
 
+def make_pipeline_dataset_id(name: str) -> str:
+    """Example: `pipeline_dataset:silver_customers`."""
+    return make_node_id(NodeType.PIPELINE_DATASET, name.strip())
+
+
+def make_django_model_id(qualified: str) -> str:
+    """Example: `django_model:customers.Customer`."""
+    return make_node_id(NodeType.DJANGO_MODEL, qualified.strip())
+
+
+def make_sqlalchemy_model_id(qualified: str) -> str:
+    """Example: `sqlalchemy_model:models.Customer`."""
+    return make_node_id(NodeType.SQLALCHEMY_MODEL, qualified.strip())
+
+
+def django_model_qualname(module: str, class_name: str) -> str:
+    """Qualify a Django model, dropping a trailing `.models` module segment."""
+    parts = [part for part in module.strip().split(".") if part]
+    if parts and parts[-1] == "models":
+        parts = parts[:-1]
+    parts.append(class_name.strip())
+    return ".".join(part for part in parts if part)
+
+
 def make_external_system_id(hostname: str) -> str:
     """Example: `external_system:api.stripe.com`."""
     host = hostname.strip().lower()
@@ -142,4 +166,7 @@ llm_id = make_llm_id
 embedding_model_id = make_embedding_model_id
 vector_store_id = make_vector_store_id
 vector_collection_id = make_vector_collection_id
+pipeline_dataset_id = make_pipeline_dataset_id
+django_model_id = make_django_model_id
+sqlalchemy_model_id = make_sqlalchemy_model_id
 external_system_id = make_external_system_id

@@ -8,6 +8,10 @@ def evidence_metadata(
     file_path: str | None = None,
     line_number: int | None = None,
     reference: str | None = None,
+    operation: str | None = None,
+    framework: str | None = None,
+    parser: str | None = None,
+    sql: str | None = None,
 ) -> dict[str, object]:
     """Return structured evidence fields that are already statically known."""
     meta: dict[str, object] = {}
@@ -17,6 +21,14 @@ def evidence_metadata(
         meta["line_number"] = line_number
     if reference:
         meta["reference"] = reference
+    if operation:
+        meta["operation"] = operation
+    if framework:
+        meta["framework"] = framework
+    if parser:
+        meta["parser"] = parser
+    if sql:
+        meta["sql"] = sql
     return meta
 
 

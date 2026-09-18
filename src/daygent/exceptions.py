@@ -44,7 +44,11 @@ class AmbiguousNodeError(DaygentError):
     def __init__(self, query: str, candidates: list[Node]) -> None:
         self.query = query
         self.candidates = list(candidates)
-        ids = ", ".join(node.id for node in self.candidates)
-        super().__init__(
-            f"Ambiguous node name {query!r} matches {len(self.candidates)} nodes: {ids}"
-        )
+        lines = [f"Ambiguous node {query!r}.", "", "Choose one:", ""]
+        for node in self.candidates:
+            hint = node.id.split(":", maxsplit=1)[-1]
+            lines.append(f'  daygent impact "{hint}"')
+        lines.extend(["", "Stable IDs:", ""])
+        for node in self.candidates:
+            lines.append(f"  {node.id}")
+        super().__init__("\n".join(lines))

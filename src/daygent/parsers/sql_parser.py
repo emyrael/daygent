@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import sqlglot
@@ -14,6 +15,28 @@ from daygent.parsers.base import BaseParser, ParseContext, ParseResult
 from daygent.parsers.evidence import evidence_metadata
 
 _DIALECTS = (None, "postgres", "duckdb", "tsql", "mysql", "spark")
+_SQL_STARTS = frozenset(
+    {
+        "select",
+        "insert",
+        "update",
+        "delete",
+        "create",
+        "merge",
+        "with",
+        "replace",
+        "upsert",
+        "truncate",
+    }
+)
+
+
+@dataclass(frozen=True)
+class SqlLineageFact:
+    """Physical tables read by one statement, plus an optional write target."""
+
+    sources: tuple[str, ...]
+    target: str | None = None
 
 
 def looks_like_jinja_sql(source: str) -> bool:
@@ -92,6 +115,15 @@ def _read_tables(statement: exp.Expression, cte_names: set[str], target: str | N
     return found
 
 
+def looks_like_sql(text: str) -> bool:
+    """Return True when a string starts like a SQL statement. No execution."""
+    stripped = text.strip().lstrip("(").strip()
+    if not stripped:
+        return False
+    first = stripped.split(None, 1)[0].lower().rstrip(";")
+    return first in _SQL_STARTS
+
+
 def parse_sql_statements(sql: str) -> tuple[list[exp.Expression], str | None]:
     """Parse SQL with sqlglot, trying a few dialects. Last error message on failure."""
     last_error: str | None = None
@@ -105,13 +137,32 @@ def parse_sql_statements(sql: str) -> tuple[list[exp.Expression], str | None]:
     return [], last_error or "unable to parse SQL"
 
 
+def extract_sql_lineage(sql: str) -> tuple[list[SqlLineageFact], str | None]:
+    """Return physical source/target tables from SQL text. Shared by .sql and Python."""
+    statements, error = parse_sql_statements(sql)
+    if error:
+        return [], error
+    facts: list[SqlLineageFact] = []
+    for statement in statements:
+        ctes = _cte_names(statement)
+        target = _write_target(statement)
+        sources = tuple(_read_tables(statement, ctes, target))
+        if sources or target:
+            facts.append(SqlLineageFact(sources=sources, target=target))
+        elif not ctes:
+            kind = statement.key or statement.__class__.__name__
+            if kind not in {"set", "command", "semicolon"}:
+                facts.append(SqlLineageFact(sources=(), target=None))
+    return facts, None
+
+
 def lineage_from_sql(
     sql: str,
     *,
     file_path: str,
 ) -> tuple[list[Node], list[Edge], list[str]]:
     """Build table nodes and read_by edges from SQL text."""
-    statements, error = parse_sql_statements(sql)
+    facts, error = extract_sql_lineage(sql)
     if error:
         return [], [], [f"Warning: unable to parse SQL in {file_path}: {error}"]
     nodes: dict[str, Node] = {}
@@ -134,21 +185,32 @@ def lineage_from_sql(
         nodes[node_id] = node
         return node
 
-    for statement in statements:
-        ctes = _cte_names(statement)
-        target = _write_target(statement)
-        sources = _read_tables(statement, ctes, target)
-        for source in sources:
+    if not facts:
+        statements, _parse_error = parse_sql_statements(sql)
+        if statements:
+            for statement in statements:
+                kind = statement.key or statement.__class__.__name__
+                if kind not in {"set", "command", "semicolon"}:
+                    warnings.append(
+                        f"Warning: unsupported or empty SQL statement in {file_path} "
+                        f"({kind})"
+                    )
+    for fact in facts:
+        if not fact.sources and fact.target is None:
+            warnings.append(
+                f"Warning: unsupported or empty SQL statement in {file_path}"
+            )
+            continue
+        for source in fact.sources:
             ensure_table(source)
-        if target:
-            target_node = ensure_table(target)
-            for source in sources:
+        if fact.target:
+            target_node = ensure_table(fact.target)
+            for source in fact.sources:
                 source_id = make_sql_table_id(source)
                 key = (source_id, target_node.id)
                 if key in seen_edges:
                     continue
                 seen_edges.add(key)
-                line = getattr(statement, "line", None)
                 edges.append(
                     Edge(
                         source=source_id,
@@ -156,17 +218,8 @@ def lineage_from_sql(
                         type=EdgeType.READ_BY,
                         confidence=Confidence.HIGH,
                         evidence="sqlglot",
-                        metadata=evidence_metadata(
-                            file_path=file_path,
-                            line_number=line if isinstance(line, int) else None,
-                        ),
+                        metadata=evidence_metadata(file_path=file_path),
                     )
-                )
-        elif not sources and not ctes:
-            kind = statement.key or statement.__class__.__name__
-            if kind not in {"set", "command", "semicolon"}:
-                warnings.append(
-                    f"Warning: unsupported or empty SQL statement in {file_path} ({kind})"
                 )
     return list(nodes.values()), edges, warnings
 

@@ -44,10 +44,18 @@ def _unique_or_ambiguous(query: str, matches: list[Node]) -> Node | None:
     return None
 
 
+def _identity(node: Node) -> str:
+    """Return the node id without the type prefix."""
+    if ":" not in node.id:
+        return node.id
+    return node.id.split(":", maxsplit=1)[-1]
+
+
 def resolve_node(graph: Graph, node_id: str) -> Node:
     """Resolve a node without silently picking among candidates.
 
-    Order: exact id, exact name, unique case-insensitive name, unique id suffix.
+    Order: exact id, unique identity (id after type), exact name, unique
+    case-insensitive name, unique dotted identity suffix, unique id suffix.
     """
     query = node_id.strip()
     if not query:
@@ -55,6 +63,11 @@ def resolve_node(graph: Graph, node_id: str) -> Node:
     index = graph.node_index()
     if query in index:
         return index[query]
+    identity = _unique_or_ambiguous(
+        query, [node for node in graph.nodes if _identity(node) == query]
+    )
+    if identity is not None:
+        return identity
     exact_name = _unique_or_ambiguous(
         query, [node for node in graph.nodes if node.name == query]
     )
@@ -66,6 +79,16 @@ def resolve_node(graph: Graph, node_id: str) -> Node:
     )
     if casefold_name is not None:
         return casefold_name
+    dotted = _unique_or_ambiguous(
+        query,
+        [
+            node
+            for node in graph.nodes
+            if _identity(node) == query or _identity(node).endswith(f".{query}")
+        ],
+    )
+    if dotted is not None:
+        return dotted
     suffix = _unique_or_ambiguous(
         query,
         [

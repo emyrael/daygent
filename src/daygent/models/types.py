@@ -31,6 +31,9 @@ class NodeType(StrEnum):
     VECTOR_STORE = "vector_store"
     VECTOR_COLLECTION = "vector_collection"
     EXTERNAL_SYSTEM = "external_system"
+    PIPELINE_DATASET = "pipeline_dataset"
+    DJANGO_MODEL = "django_model"
+    SQLALCHEMY_MODEL = "sqlalchemy_model"
 
 
 class EdgeType(StrEnum):

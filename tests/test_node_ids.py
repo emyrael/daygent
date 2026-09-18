@@ -17,6 +17,10 @@ from daygent.models import (
     make_python_function_id,
     make_python_module_id,
     make_sql_table_id,
+    make_sqlalchemy_model_id,
+    make_pipeline_dataset_id,
+    make_django_model_id,
+    django_model_qualname,
     make_vector_collection_id,
     make_vector_store_id,
     normalize_sql_table_name,
@@ -70,6 +74,10 @@ def test_additional_stable_ids() -> None:
     )
     assert make_vector_store_id("Qdrant") == "vector_store:qdrant"
     assert make_vector_collection_id("company_docs") == "vector_collection:company_docs"
+    assert make_pipeline_dataset_id("silver_customers") == "pipeline_dataset:silver_customers"
+    assert make_django_model_id("customers.Customer") == "django_model:customers.Customer"
+    assert make_sqlalchemy_model_id("models.Customer") == "sqlalchemy_model:models.Customer"
+    assert django_model_qualname("customers.models", "Customer") == "customers.Customer"
 
 
 def test_make_node_id_generic_and_extensible() -> None:

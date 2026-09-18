@@ -26,6 +26,9 @@ ANCHOR_TYPES: frozenset[str] = frozenset(
         NodeType.VECTOR_STORE,
         NodeType.VECTOR_COLLECTION,
         NodeType.EXTERNAL_SYSTEM,
+        NodeType.PIPELINE_DATASET,
+        NodeType.DJANGO_MODEL,
+        NodeType.SQLALCHEMY_MODEL,
     }
 )
 

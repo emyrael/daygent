@@ -16,7 +16,10 @@
     embedding_model: "#38bdf8",
     vector_store: "#818cf8",
     vector_collection: "#c4b5fd",
-    external_system: "#f87171"
+    external_system: "#f87171",
+    pipeline_dataset: "#5eead4",
+    django_model: "#86efac",
+    sqlalchemy_model: "#67e8f9"
   };
 
   var NODE_W = 188;
