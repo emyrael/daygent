@@ -120,12 +120,15 @@ def test_scanner_keeps_function_to_host(tmp_path: Path) -> None:
 
 
 def test_no_network_call_occurs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+    import urllib.request
+
     def boom(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("network call")
 
-    monkeypatch.setattr("socket.create_connection", boom)
-    monkeypatch.setattr("socket.socket", boom)
-    monkeypatch.setattr("urllib.request.urlopen", boom)
+    monkeypatch.setattr(socket, "create_connection", boom)
+    monkeypatch.setattr(socket, "socket", boom)
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
     result = _parse(tmp_path)
     assert "external_system:api.stripe.com" in {node.id for node in result.nodes}
 
