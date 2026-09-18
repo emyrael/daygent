@@ -47,3 +47,8 @@ jobs:
           name: dist
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Re-pushing or force-updating an existing tag replays this job, and
+          # PyPI rejects a duplicate filename with a 400. Nothing is left to
+          # upload in that case, so treat it as a no-op instead of a failure.
+          skip-existing: true
